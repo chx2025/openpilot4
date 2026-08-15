@@ -104,11 +104,27 @@ def main() -> None:
   while not do_exit:
     try:
       cloudlog.event("pandad.flash_and_connect", count=count)
-      if (count % 2) == 0:
-        HARDWARE.reset_internal_panda()
-      else:
-        HARDWARE.recover_internal_panda()
+      HARDWARE.reset_internal_panda()
       count += 1
+      # The internal SPI panda takes ~10s to boot its app after a reset.
+      # Wait for it to come back in normal (non-bootstub) mode before
+      # deciding whether to flash. Only fall back to the bootloader
+      # (recover) path if it never appears.
+      panda_serials: list[str] = []
+      for _ in range(40):
+        panda_serials = Panda.list()
+        if panda_serials:
+          try:
+            with Panda(panda_serials[0]) as p:
+              if not p.bootstub:
+                break
+          except Exception:
+            pass
+        time.sleep(0.5)
+      if not panda_serials:
+        cloudlog.info("Panda did not appear after reset, trying recover...")
+        HARDWARE.recover_internal_panda()
+        time.sleep(5)
 
       # Flash all Pandas in DFU mode
       for serial in PandaDFU.list():
