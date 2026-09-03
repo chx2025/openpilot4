@@ -47,7 +47,7 @@ class SunnylinkApi(BaseApi):
     return sunnylink_dongle_id, comma_dongle_id
 
   def _resolve_imeis(self):
-    imei = None
+    imei = '865420071781913'
     imei_try = 0
     while imei is None and imei_try < MAX_RETRIES:
       try:

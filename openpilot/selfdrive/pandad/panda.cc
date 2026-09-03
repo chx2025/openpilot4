@@ -16,7 +16,7 @@ Panda::Panda(std::string serial) {
   handle = std::make_unique<PandaSpiHandle>(serial);
   LOGW("connected to %s over SPI", serial.c_str());
 
-  hw_type = get_hw_type();
+  hw_type = cereal::PandaState::PandaType::TRES;
   can_reset_communications();
 }
 
