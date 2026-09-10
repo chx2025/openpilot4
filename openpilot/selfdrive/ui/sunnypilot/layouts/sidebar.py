@@ -62,6 +62,7 @@ class SidebarSP:
     self._chestnut_green_img = gui_app.texture("icons_mici/chestnut_green.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
     self._chestnut_default_img = gui_app.texture("icons_mici/chestnut.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
     self._chestnut_orange_img = gui_app.texture("icons_mici/chestnut_orange.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
+    self._egpu_offline_img = gui_app.texture("icons_mici/egpu_offline.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
 
   def _update_sunnylink_status(self):
     if not ui_state.params.get_bool("SunnylinkEnabled"):
@@ -88,10 +89,12 @@ class SidebarSP:
     self._sunnylink_status.update(tr_noop("SUNNYLINK"), status, color)
 
   def _get_home_icon(self, default_img: rl.Texture) -> tuple[rl.Texture, rl.Vector2, float]:
-    default_pos = rl.Vector2(HOME_BTN.x, HOME_BTN.y)
     state = ui_state.chestnut_state
     if state == ChestnutState.DISCONNECTED:
-      return default_img, default_pos, 1.0
+      icon = self._egpu_offline_img
+      x = HOME_BTN.x + (HOME_BTN.width - icon.width) / 2
+      y = HOME_BTN.y + (HOME_BTN.height - icon.height) / 2
+      return icon, rl.Vector2(x, y), 1.0
 
     if state == ChestnutState.LOADING:
       icon = self._chestnut_default_img

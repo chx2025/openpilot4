@@ -18,6 +18,7 @@ openpilot/selfdrive/assets/fonts/OpFont-Bold.otf -filter=lfs -diff=lfs -merge=lf
 openpilot/selfdrive/assets/fonts/OpFont-Medium.otf -filter=lfs -diff=lfs -merge=lfs
 openpilot/selfdrive/assets/fonts/OpFont-Regular.otf -filter=lfs -diff=lfs -merge=lfs
 openpilot/selfdrive/assets/fonts/OpFont-SemiBold.otf -filter=lfs -diff=lfs -merge=lfs
+openpilot/selfdrive/assets/icons_mici/egpu_offline.png -filter=lfs -diff=lfs -merge=lfs
 openpilot/selfdrive/assets/training/step0.png -filter=lfs -diff=lfs -merge=lfs
 openpilot/selfdrive/assets/training/step1.png -filter=lfs -diff=lfs -merge=lfs
 openpilot/selfdrive/assets/training/step2.png -filter=lfs -diff=lfs -merge=lfs
