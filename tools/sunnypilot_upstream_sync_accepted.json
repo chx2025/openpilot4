@@ -1,4 +1,10 @@
 {
+  "b255314f5ad9ff46f5561c7c2ef21c5b3c6585e7": {
+    "reason": "ported official PR-2006 dynamic model loader, compatibility workflow/tests and tinygrad f6fc4e3f2c; retained C3XL progress as an I/O adapter, with compiled-graph and native TSFM output comparison"
+  },
+  "6135084c941d4d947dd90c78326a557c3c857f89": {
+    "reason": "equivalent final source tree to PR-1993 d7163541, already integrated by 5bf1d5887e with C3XL seams"
+  },
   "b8e14d85fbb5e3da1af7f3596e0d9eb49965056d": {
     "reason": "superseded upstream by 03711a13b0a7740f28ac480b42da67a86ed1d1dd"
   },

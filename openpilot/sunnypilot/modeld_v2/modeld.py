@@ -11,8 +11,8 @@ import os
 import sys
 os.environ['GMMU'] = '0'
 from openpilot.common.hardware import COMMA_HARDWARE
-from openpilot.selfdrive.modeld.helpers import CHESTNUT_PCIE_READY, chestnut_present, load_oob
-from openpilot.sunnypilot.modeld_v2.egpu_loader import C3XL_MODEL_LOAD_TIMEOUT, configure_default_device, load_with_timeout
+from openpilot.selfdrive.modeld.helpers import CHESTNUT_PCIE_READY, chestnut_present
+from openpilot.sunnypilot.modeld_v2.egpu_loader import C3XL_MODEL_LOAD_TIMEOUT, configure_default_device, load_with_progress, load_with_timeout
 from openpilot.sunnypilot.hardware.profile import HardwareProfile, get_hardware_profile
 configure_default_device(COMMA_HARDWARE, c3xl=get_hardware_profile() == HardwareProfile.C3XL)
 import numpy as np
@@ -22,6 +22,7 @@ from tinygrad.helpers import Context
 from tinygrad.tensor import Tensor
 
 import openpilot.cereal.messaging as messaging
+from openpilot.sunnypilot.modeld_v2.helpers import load_oob
 from openpilot.cereal import log
 from opendbc.car.structs import car
 from openpilot.cereal.services import SERVICE_LIST
@@ -177,11 +178,12 @@ class ModelState(ModelStateBase):
         loading_progress_callback(5 + int(value * 70))
 
     total_size = get_chunked_file_size(pkl_path)
-    if self.chestnut:
-      with Context(DEV="USB+AMD:LLVM"):
-        jits = load_oob(open_file_chunked(pkl_path), total_size=total_size, progress_callback=report_read_progress)
-    else:
-      jits = load_oob(open_file_chunked(pkl_path), total_size=total_size, progress_callback=report_read_progress)
+    with open_file_chunked(pkl_path) as model_file:
+      if self.chestnut:
+        with Context(DEV="USB+AMD:LLVM"):
+          jits = load_with_progress(load_oob, model_file, total_size=total_size, progress_callback=report_read_progress)
+      else:
+        jits = load_with_progress(load_oob, model_file, total_size=total_size, progress_callback=report_read_progress)
     if loading_progress_callback is not None:
       loading_progress_callback(80)
 

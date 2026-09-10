@@ -14,7 +14,7 @@ is not authoritative.
 - Selecting a Small Model while Chestnut is healthy prepares the QCOM slot but
   does not make it the active driving model. Safe-eject or disconnect Chestnut
   to use the QCOM slot.
-- A C3XL Model Adapter may report hardware capability and preserve the 75
+- A C3XL Model Adapter may report hardware capability and preserve the 120
   second load allowance, loading progress, downloaded-bundle readiness,
   compile-CPU selection, UT3G identity, telemetry, and safe eject. It must not
   implement a second product-selection algorithm.
@@ -46,3 +46,17 @@ retain the upstream separate warp/policy path. The C3XL seam is limited to
 hardware detection, persistent firmware/cache configuration, the measured
 load timeout, loading progress, telemetry, power policy, and reliable fallback.
 It does not choose a model execution format or preserve a retired artifact ABI.
+
+The 2026-09-09 dev release source `b255314f5ad9ff46f5561c7c2ef21c5b3c6585e7`
+introduces the official dynamic tinygrad pickle loader and pins tinygrad to
+`f6fc4e3f2c3db5fae1e19cbfbc3ad9fc579a12ae`. Follow that loader as one upstream
+module. C3XL byte progress and complete-buffer reads wrap its input stream in
+the existing `egpu_loader` adapter, without changing class/enum compatibility
+inside the official loader. Retired nested execution formats remain retired.
+
+Loading a dictionary is not an inference acceptance test. Check old compiled
+graphs against the new runtime and compare native model outputs. The initial
+TSFM check ran each runtime for 600 frames and compared 275 sampled arrays;
+this establishes that bounded QCOM comparison, not eGPU validation or a 20 Hz
+performance guarantee. Camera-offset geometry separately follows dzid26
+`43fc79d4371c8ca9d939f1a1875630d56f3c3458`, with zero-offset and C3XL camera tests.

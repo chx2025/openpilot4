@@ -16,6 +16,38 @@ class EgpuModelLoadError(RuntimeError):
   pass
 
 
+def load_with_progress(loader, stream, *, total_size: int | None = None, progress_callback=None):
+  """Track I/O around the official loader without changing its pickle semantics."""
+  class ProgressReader:
+    bytes_read = 0
+
+    def report(self, count):
+      self.bytes_read += count
+      if progress_callback is not None and total_size:
+        progress_callback(min(1.0, self.bytes_read / total_size))
+
+    def read(self, size=-1):
+      data = stream.read(size)
+      self.report(len(data))
+      return data
+
+    def readinto(self, buffer):
+      view = memoryview(buffer).cast('B')
+      offset = 0
+      while offset < len(view):
+        count = stream.readinto(view[offset:])
+        if not count:
+          raise EOFError('truncated out-of-band pickle buffer')
+        offset += count
+        self.report(count)
+      return offset
+
+  result = loader(ProgressReader())
+  if progress_callback is not None:
+    progress_callback(1.0)
+  return result
+
+
 def configure_default_device(comma_hardware: bool, environment: MutableMapping[str, str] = os.environ, *, c3xl: bool = False) -> None:
   """Prevent tinygrad's default-device scan from probing the USB AMD GPU."""
   if comma_hardware:
