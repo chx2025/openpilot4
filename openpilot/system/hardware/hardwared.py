@@ -21,11 +21,15 @@ from openpilot.selfdrive.debug.onroad_block_log import OnroadBlockLogger
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE
 from openpilot.common.basedir import BASEDIR
-from openpilot.common.hardware.usb import (CHESTNUT_FW_VERSION, CHESTNUT_LINK_RETRY_BUDGET,
-                                          CHESTNUT_LINK_RETRY_INTERVAL_S, CHESTNUT_VBUS_CYCLE_AFTER_POKES,
-                                          CHESTNUT_VBUS_CYCLE_BUDGET, USB_SUPERSPEED_MIN_MBPS,
-                                          chestnut_official_flash_mismatch, get_usb_state,
-                                          is_chestnut_runtime_device, set_usb_state)
+from openpilot.common.hardware.usb import (CHESTNUT_ABSENT_GRACE_S, CHESTNUT_ABSENT_VBUS_CYCLE_BUDGET,
+                                          CHESTNUT_ABSENT_VBUS_CYCLE_INTERVAL_S, CHESTNUT_FW_VERSION,
+                                          CHESTNUT_LINK_RETRY_BUDGET, CHESTNUT_LINK_RETRY_INTERVAL_S,
+                                          CHESTNUT_REARM_BUDGET, CHESTNUT_REARM_INTERVAL_S,
+                                          CHESTNUT_VBUS_CYCLE_AFTER_POKES, CHESTNUT_VBUS_CYCLE_BUDGET,
+                                          CHESTNUT_VBUS_CYCLE_BUDGET_TOTAL, USB_SUPERSPEED_MIN_MBPS,
+                                          chestnut_device_present, chestnut_official_flash_mismatch,
+                                          get_usb_state, is_chestnut_runtime_device, set_usb_state,
+                                          typec_partner_attached)
 from openpilot.common.linux import LinuxSystemStats
 from openpilot.system.loggerd.config import get_available_percent
 from openpilot.common.swaglog import cloudlog
@@ -91,7 +95,7 @@ HardwareState = namedtuple("HardwareState", ['network_type', 'network_info', 'ne
 
 
 class ChestnutLinkNegotiator:
-  """Pokes the ASM link_up() ioctl when a chestnut eGPU is enumerated at < USB 3.0.
+  """Drives the chestnut eGPU back onto USB 3.0 SuperSpeed after a power-on race.
 
   The chestnut ASM2464 USB-SSD bridge and the host C3XL USB-C controller can
   finish enumeration before the PCIe link is up; on C3XL the 12V power-on and
@@ -99,28 +103,30 @@ class ChestnutLinkNegotiator:
   for tens of seconds. Without intervention modeld will see chestnutPresent=True
   and try to load ~70 MB of weights over a USB 2.0 pipe, hanging the boot.
 
-  ChestnutLinkNegotiator reads the same USB state hardwared already samples,
-  and on detecting a chestnut device at low speed sends the vendor link_up()
-  ioctl. SP boot on C3XL takes ~60-90s, so the retry budget is set wide enough
-  (24 * 5s = 120s) to cover the worst-case race. The retry budget is per-boot
-  (in-memory only) -- if the link never comes up, the device is treated as
-  not-present for the rest of this boot and modeld falls back to the small
-  model gracefully instead of hanging.
+  Three ladders, in the order they become reachable:
+
+  1. Slow link -- the device enumerated below USB 3.0: poke the vendor link_up()
+     ioctl, bounded by CHESTNUT_LINK_RETRY_BUDGET over CHESTNUT_LINK_RETRY_INTERVAL_S,
+     with a budget sized to cover the worst-case C3XL boot window.
+  2. Slow link, escalation -- after CHESTNUT_VBUS_CYCLE_AFTER_POKES failed pokes,
+     cycle the USB VBUS rail. This re-powers the dock side, forcing the ASM2464
+     and the GPU to redo their power-up + PCIe training after the host is
+     already stable, which is exactly the empirically-good power-on ordering.
+  3. Device absent entirely (user-observed: C3XL and dock switched on
+     simultaneously -> the eGPU is never detected at all, and neither an
+     offroad/onroad cycle nor settings mode recovers it). The first two ladders
+     cannot reach this case: there is no device to poke link_up() on, and
+     hardwared never restarts, so nothing ever re-evaluates the link. After
+     CHESTNUT_ABSENT_GRACE_S with no chestnut on the bus, cycle VBUS -- the
+     software equivalent of powering the dock a few seconds after the host.
 
   This negotiator does not block or own state publication; it only kicks the
-  ioctl in the background. The visible state (chestnutPresent) flips as soon
+  ioctls in the background. The visible state (chestnutPresent) flips as soon
   as the next get_usb_state() cycle sees the speed climb above the gate.
-
-  Escalation ladder (user-observed failure: C3XL and dock powered simultaneously
-  -> eGPU never comes online; dock powered a few seconds later -> always fine):
-  1. link_up() pokes (cheap, non-disruptive)
-  2. after CHESTNUT_VBUS_CYCLE_AFTER_POKES failed pokes, cycle the USB VBUS
-     rail (smb2-vbus regulator) -- the software equivalent of "power the dock
-     a few seconds after the host", which empirically always recovers the
-     device. Limited to CHESTNUT_VBUS_CYCLE_BUDGET cycles per boot.
-  Also: per-device attempt state resets whenever the device disappears from
-  the bus (dock power cycle / re-plug), so a hot-plug after a give-up gets a
-  fresh negotiation instead of staying dead until reboot.
+  Per-device state resets whenever the device disappears from the bus, a link
+  that exhausted its poke budget is re-armed a bounded number of times, and a
+  healthy SuperSpeed link clears every budget -- so a late recovery does not
+  need a reboot.
   """
   def __init__(self):
     self._attempts: dict[tuple[int, int], int] = {}
@@ -128,6 +134,16 @@ class ChestnutLinkNegotiator:
     self._gave_up: set[tuple[int, int]] = set()
     self._vbus_cycles: dict[tuple[int, int], int] = {}
     self._last_keys: set[tuple[int, int]] = set()
+    # Absent-device ladder state. _boot_t is this negotiator's construction
+    # time, not the process start, so the grace period protects the boot window
+    # in which a dock that is powered on a few seconds late comes up on its own.
+    self._boot_t: float = time.monotonic()
+    self._vbus_cycles_total: int = 0
+    self._vbus_unavailable_logged: bool = False
+    self._rearms: dict[tuple[int, int], int] = {}
+    self._gave_up_at: dict[tuple[int, int], float] = {}
+    self._absent_cycles: int = 0
+    self._last_absent_cycle_t: float = 0.0
 
   def update(self, usb_state: list[dict]) -> None:
     chestnut_devices = [d for d in usb_state if is_chestnut_runtime_device(d)]
@@ -139,21 +155,50 @@ class ChestnutLinkNegotiator:
     for key in self._last_keys - current_keys:
       if key in self._gave_up or key in self._attempts:
         cloudlog.warning(f"chestnut {key} disappeared; resetting link negotiation state")
-      self._attempts.pop(key, None)
-      self._vbus_cycles.pop(key, None)
-      self._gave_up.discard(key)
+      self._forget(key)
     self._last_keys = current_keys
-    if not chestnut_devices:
-      return
+
     # If any chestnut device is already at SuperSpeed, don't poke -- the
     # device tree sometimes reports both the USB 2.0 and USB 3.0 siblings of
     # the same physical device, and we don't want to disturb an already-good
-    # link just because the USB 2.0 sibling is still visible.
+    # link just because the USB 2.0 sibling is still visible. A healthy link
+    # also releases every recovery budget, so a later failure starts fresh.
     if any(d.get("speedMbps", 0) >= USB_SUPERSPEED_MIN_MBPS for d in chestnut_devices):
+      self._reset_counters()
       return
-    for d in chestnut_devices:
+
+    if chestnut_devices:
+      self._negotiate_slow_link(chestnut_devices, time.monotonic())
+      return
+
+    self._recover_absent_device(usb_state, time.monotonic())
+
+  def _forget(self, key: tuple[int, int]) -> None:
+    self._attempts.pop(key, None)
+    self._vbus_cycles.pop(key, None)
+    self._gave_up.discard(key)
+    self._gave_up_at.pop(key, None)
+    self._rearms.pop(key, None)
+
+  def _reset_counters(self) -> None:
+    """Release every budget after a healthy link.
+
+    The throttle clocks are deliberately left alone: a link that flaps between
+    SuperSpeed and USB 2.0 must not be able to buy extra VBUS cycles by
+    resetting the counters on each healthy sample.
+    """
+    self._attempts.clear()
+    self._vbus_cycles.clear()
+    self._gave_up.clear()
+    self._gave_up_at.clear()
+    self._rearms.clear()
+    self._vbus_cycles_total = 0
+    self._absent_cycles = 0
+
+  def _negotiate_slow_link(self, devices: list[dict], now: float) -> None:
+    for d in devices:
       key = (int(d.get("vendorId", 0)), int(d.get("productId", 0)))
-      if key in self._gave_up:
+      if key in self._gave_up and not self._rearm(key, now):
         continue
       attempts = self._attempts.get(key, 0)
       if attempts >= CHESTNUT_LINK_RETRY_BUDGET:
@@ -164,17 +209,17 @@ class ChestnutLinkNegotiator:
             f"device stays at {d.get('speedMbps')} Mbps, small-model fallback engaged"
           )
           self._gave_up.add(key)
+          self._gave_up_at[key] = now
         continue
-      now = time.monotonic()
       if now - self._last_attempt_t < CHESTNUT_LINK_RETRY_INTERVAL_S:
         continue
-      attempts = self._attempts.get(key, 0)
       # Escalation: pokes alone didn't lift the link out of USB 2.0 -> cycle
       # the VBUS rail. This re-powers the dock side, forcing the ASM2464 and
       # GPU to redo their power-up + PCIe training after the host is already
       # stable, which is exactly the empirically-good power-on ordering.
       vbus_cycles = self._vbus_cycles.get(key, 0)
-      if attempts >= CHESTNUT_VBUS_CYCLE_AFTER_POKES and vbus_cycles < CHESTNUT_VBUS_CYCLE_BUDGET:
+      if (attempts >= CHESTNUT_VBUS_CYCLE_AFTER_POKES and vbus_cycles < CHESTNUT_VBUS_CYCLE_BUDGET
+          and self._vbus_cycles_total < CHESTNUT_VBUS_CYCLE_BUDGET_TOTAL):
         self._last_attempt_t = now
         self._vbus_cycles[key] = vbus_cycles + 1
         self._attempts[key] = 0  # fresh poke budget after the power cycle
@@ -182,11 +227,7 @@ class ChestnutLinkNegotiator:
           f"chestnut still at {d.get('speedMbps')} Mbps after {attempts} link_up() pokes; "
           f"cycling USB VBUS (cycle {self._vbus_cycles[key]}/{CHESTNUT_VBUS_CYCLE_BUDGET})"
         )
-        try:
-          from openpilot.system.hardware.chestnut.flash import vbus_cycle
-          vbus_cycle()
-        except Exception:
-          cloudlog.exception("chestnut VBUS cycle failed; will retry")
+        self._run_vbus_cycle()
         continue
       self._attempts[key] = attempts + 1
       self._last_attempt_t = now
@@ -194,12 +235,95 @@ class ChestnutLinkNegotiator:
         f"chestnut at {d.get('speedMbps')} Mbps; "
         f"poking ASM link_up() (attempt {self._attempts[key]}/{CHESTNUT_LINK_RETRY_BUDGET})"
       )
-      try:
-        from openpilot.system.hardware.chestnut.flash import link_up
-        link_up()
-      except Exception:
-        cloudlog.exception("chestnut link_up() ioctl failed; will retry")
+      self._run_link_up()
 
+  def _rearm(self, key: tuple[int, int], now: float) -> bool:
+    """Grant a fresh poke budget to a link that already gave up.
+
+    hardwared is a long-lived process: an offroad/onroad toggle does not restart
+    it, so without this an exhausted budget stays dead for the whole boot even
+    after the user power-cycled the dock by hand (user-observed: "entering
+    settings mode and going onroad again does not help"). Bounded and spaced
+    out, so a genuinely broken dock is not thrashed.
+    """
+    if self._rearms.get(key, 0) >= CHESTNUT_REARM_BUDGET:
+      return False
+    if now - self._gave_up_at.get(key, now) < CHESTNUT_REARM_INTERVAL_S:
+      return False
+    self._rearms[key] = self._rearms.get(key, 0) + 1
+    self._attempts[key] = 0
+    self._gave_up.discard(key)
+    cloudlog.warning(
+      f"chestnut link negotiation re-armed "
+      f"({self._rearms[key]}/{CHESTNUT_REARM_BUDGET})"
+    )
+    return True
+
+  def _recover_absent_device(self, usb_state: list[dict], now: float) -> None:
+    """Bring the dock up when it never enumerated at all.
+
+    Nothing else can: there is no device to poke link_up() on, hardwared does
+    not restart across offroad/onroad, and the ChestnutFlasher only runs for
+    devices that are already on the bus. Without this ladder the boot silently
+    runs the small model forever.
+    """
+    if now - self._boot_t < CHESTNUT_ABSENT_GRACE_S:
+      return  # a dock powered on a few seconds late still enumerates on its own
+    if self._absent_cycles >= CHESTNUT_ABSENT_VBUS_CYCLE_BUDGET:
+      return
+    if self._vbus_cycles_total >= CHESTNUT_VBUS_CYCLE_BUDGET_TOTAL:
+      return
+    if now - self._last_absent_cycle_t < CHESTNUT_ABSENT_VBUS_CYCLE_INTERVAL_S:
+      return
+    if not self._vbus_control_present():
+      if not self._vbus_unavailable_logged:
+        self._vbus_unavailable_logged = True
+        cloudlog.warning(
+          "no chestnut eGPU enumerated and this unit exposes no smb2-vbus control; "
+          "the dock can only be recovered by a manual power cycle"
+        )
+      return
+    if chestnut_device_present(usb_state):
+      reason = "dock on the bus but not running runtime firmware"
+    elif typec_partner_attached():
+      reason = "Type-C partner detected but never enumerated"
+    else:
+      reason = "port reports no partner; the dock may have failed before CC detection"
+    self._last_absent_cycle_t = now
+    self._absent_cycles += 1
+    cloudlog.warning(
+      f"no chestnut eGPU enumerated {now - self._boot_t:.0f}s after boot ({reason}); "
+      f"cycling USB VBUS to restart the dock handshake "
+      f"(cycle {self._absent_cycles}/{CHESTNUT_ABSENT_VBUS_CYCLE_BUDGET})"
+    )
+    self._run_vbus_cycle()
+
+  def _vbus_control_present(self) -> bool:
+    try:
+      from openpilot.system.hardware.chestnut.flash import vbus_control_available
+      return vbus_control_available()
+    except Exception:
+      return False
+
+  def _run_vbus_cycle(self) -> bool:
+    try:
+      from openpilot.system.hardware.chestnut.flash import vbus_cycle
+      cycled = vbus_cycle()
+    except Exception:
+      cloudlog.exception("chestnut VBUS cycle failed; will retry")
+      return False
+    if not cycled:
+      cloudlog.warning("chestnut VBUS cycle did nothing (smb2-vbus control unavailable)")
+      return False
+    self._vbus_cycles_total += 1
+    return True
+
+  def _run_link_up(self) -> None:
+    try:
+      from openpilot.system.hardware.chestnut.flash import link_up
+      link_up()
+    except Exception:
+      cloudlog.exception("chestnut link_up() ioctl failed; will retry")
 
 def put_latest(state_queue: queue.Queue, state) -> None:
   """Publish latest-value state without allowing a stale queued sample to win."""

@@ -35,6 +35,34 @@ CHESTNUT_LINK_RETRY_BUDGET = 24  # 24 * 5s = 120s total
 CHESTNUT_VBUS_CYCLE_AFTER_POKES = 3
 CHESTNUT_VBUS_CYCLE_BUDGET = 3
 
+# Absent-device recovery. The ladder above only runs once a chestnut device has
+# enumerated at *some* speed. When the C3XL and the dock are switched on at the
+# same time the ASM2464 can finish its own boot before the host has established
+# the USB-C power role, and then the device never enumerates at all -- there is
+# nothing to poke link_up() on and modeld silently runs the small model for the
+# whole boot. The only action that recovers that state is cycling the VBUS rail
+# (the same thing flash.py::activate() does), i.e. the software equivalent of
+# "power the dock a few seconds after the host", which is the ordering that
+# empirically always works.
+#
+# The grace period must be longer than the time a *correctly* ordered power-up
+# takes to enumerate, otherwise this would power-cycle a dock that is simply
+# coming up a few seconds late and break the working case.
+CHESTNUT_ABSENT_GRACE_S = 60.0
+CHESTNUT_ABSENT_VBUS_CYCLE_INTERVAL_S = 45.0
+CHESTNUT_ABSENT_VBUS_CYCLE_BUDGET = 3
+
+# hardwared is a long-lived process: an offroad/onroad toggle does not restart
+# it, so a link that burned its poke budget is otherwise dead until the next
+# reboot ("entering settings mode and going back onroad does not help"). Re-arm
+# a bounded number of times, spaced out, before giving up for the rest of boot.
+CHESTNUT_REARM_INTERVAL_S = 240.0
+CHESTNUT_REARM_BUDGET = 2
+
+# Total VBUS cycles allowed per boot across every ladder, so a genuinely broken
+# dock cannot be thrashed indefinitely by the escalation paths.
+CHESTNUT_VBUS_CYCLE_BUDGET_TOTAL = 6
+
 
 def is_chestnut_runtime_device(device: dict) -> bool:
   usb_id = (int(device.get("vendorId", 0)), int(device.get("productId", 0)))
@@ -56,6 +84,29 @@ def is_chestnut_superspeed(device: dict) -> bool:
 
 def chestnut_runtime_present(devices: list[dict]) -> bool:
   return any(is_chestnut_runtime_device(device) for device in devices)
+
+
+def chestnut_device_present(devices: list[dict]) -> bool:
+  """Any chestnut-shaped device on the bus, whatever state it is in.
+
+  Covers runtime firmware, an older firmware revision, and the ASM ROM
+  bootloader. Uninitialised dock states still carry the chestnut vendor/product
+  IDs, so this is the "the dock is physically attached" signal the
+  absent-device recovery ladder uses; is_chestnut_runtime_device() is the
+  stricter "and it is running our firmware" question.
+  """
+  return any((int(d.get("vendorId", 0)), int(d.get("productId", 0))) in CHESTNUT_USB_IDS + CHESTNUT_ROM_USB_IDS
+             for d in devices)
+
+
+def typec_partner_attached() -> bool:
+  """True when a USB-C partner is detected on the port.
+
+  Read from the Type-C CC lines, which is physical-layer attach detection: it
+  still reports the dock while the dock is failing to enumerate, which is
+  exactly the case the absent-device recovery has to detect.
+  """
+  return read_int(TYPEC_CC_ORIENTATION_PATH) != 0
 
 
 def chestnut_official_flash_mismatch(devices: list[dict]) -> bool:

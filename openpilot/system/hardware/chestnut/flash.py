@@ -422,20 +422,40 @@ def rom_write(image, config):
   print("recovery flash done", flush=True)
 
 
-def vbus_write(value):
+def vbus_write(value) -> bool:
   try:
     with open(VBUS_PATH, "w") as f:
       f.write(value + "\n")
+    return True
   except OSError:
-    pass
+    return False
 
 
-def vbus_cycle():
-  if os.path.exists(VBUS_PATH):
-    vbus_write("0")
-    time.sleep(2)
-    vbus_write("1")
-    time.sleep(5)
+def vbus_control_available() -> bool:
+  """Whether this device can power-cycle the USB-C port at all.
+
+  Some units do not expose the smb2-vbus regulator (the debugfs node is missing
+  when debugfs is not mounted, or the board routes the rail differently). Callers
+  that escalate to a VBUS cycle must be able to tell "the cycle did nothing"
+  apart from "the cycle ran and did not help" -- otherwise recovery logs claim a
+  power cycle that never happened.
+  """
+  return os.path.exists(VBUS_PATH)
+
+
+def vbus_cycle() -> bool:
+  """Power-cycle the USB-C port feeding the dock. Returns whether it happened.
+
+  The rail is always restored to enabled, even if cutting it failed, so a
+  partial failure can never leave the port unpowered.
+  """
+  if not vbus_control_available():
+    return False
+  cut = vbus_write("0")
+  time.sleep(2)
+  restored = vbus_write("1")
+  time.sleep(5)
+  return cut and restored
 
 
 def activate(expected_product):
