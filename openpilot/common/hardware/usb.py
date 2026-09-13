@@ -12,6 +12,23 @@ USB_DEVICES_PATH = Path("/sys/bus/usb/devices")
 TYPEC_CC_ORIENTATION_PATH = Path("/sys/class/power_supply/usb/typec_cc_orientation")
 PRIMARY_USB_CONTROLLER = "a600000.ssusb"
 
+# A chestnut eGPU that enumerates at less than USB 3.0 SuperSpeed (5 Gbps)
+# has not finished its PCIe/USB link handshake. Tinygrad will try to load
+# ~70 MB of model weights over a 480 Mbps (USB 2.0) or 12 Mbps (USB 1.1) pipe
+# and either time out or OOM, so we must treat it as not-yet-present. The
+# matching `ChestnutLinkNegotiator` in hardwared.py will poke the ASM link_up()
+# ioctl on slow enumerations to redo the handshake; this constant is the
+# gate the negotiator is racing against.
+USB_SUPERSPEED_MIN_MBPS = 5000
+
+# hardwared.py: how aggressively to retry the ASM link_up() ioctl when a
+# chestnut device is seen at low speed. SP boot on C3XL takes ~60-90s; the
+# 12V power-on race with USB-C enumeration can keep the link at USB 2.0 for
+# the entire boot window, so we keep retrying for ~2 minutes before giving up
+# and letting the speed gate above force the small-model fallback.
+CHESTNUT_LINK_RETRY_INTERVAL_S = 5.0
+CHESTNUT_LINK_RETRY_BUDGET = 24  # 24 * 5s = 120s total
+
 
 def is_chestnut_runtime_device(device: dict) -> bool:
   usb_id = (int(device.get("vendorId", 0)), int(device.get("productId", 0)))
@@ -21,6 +38,14 @@ def is_chestnut_runtime_device(device: dict) -> bool:
   if usb_id in UT3G_DUAL_USB_IDS:
     return str(device.get("manufacturer", "")) == "tiny" and UT3G_DUAL_PRODUCT_RE.fullmatch(product) is not None
   return False
+
+
+def is_chestnut_superspeed(device: dict) -> bool:
+  """True iff the device is a chestnut eGPU AND has finished its USB 3.0
+  SuperSpeed handshake. The 12V power-on race with USB-C enumeration can leave
+  the device stuck at 480 Mbps; modeld must not try to load weights through a
+  USB 2.0 pipe (see USB_SUPERSPEED_MIN_MBPS)."""
+  return is_chestnut_runtime_device(device) and int(device.get("speedMbps", 0)) >= USB_SUPERSPEED_MIN_MBPS
 
 
 def chestnut_runtime_present(devices: list[dict]) -> bool:
@@ -109,7 +134,13 @@ def set_usb_state(device_state, devices: list[dict]) -> None:
     entry.linkErrorCount = device["linkErrorCount"]
     entry.usb3Lane = device.get("usb3Lane", "unknown")
 
-    if is_chestnut_runtime_device(device):
+    # Gate chestnutPresent on SuperSpeed: a chestnut device still at USB 2.0/1.x
+    # is in the middle of its PCIe link handshake. Reporting it as present here
+    # would cause modeld to load the big model over a 480 Mbps pipe and hang.
+    # The ChestnutLinkNegotiator in hardwared.py is concurrently poking the ASM
+    # link_up() ioctl to drive the handshake; once speedMbps climbs to 5000+,
+    # the next hardwared cycle flips this bit on.
+    if is_chestnut_superspeed(device):
       chestnut_present = True
 
   device_state.chestnutPresent = chestnut_present

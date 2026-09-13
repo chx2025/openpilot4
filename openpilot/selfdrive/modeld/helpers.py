@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from openpilot.common.file_chunker import get_manifest_path
-from openpilot.common.hardware.usb import USB_DEVICES_PATH, is_chestnut_runtime_device
+from openpilot.common.hardware.usb import USB_DEVICES_PATH, is_chestnut_superspeed, is_chestnut_runtime_device
 
 MODELS_DIR = Path(__file__).resolve().parent / 'models'
 TG_INPUT_DEVICES_PATH = MODELS_DIR / 'tg_input_devices.json'
@@ -84,8 +84,15 @@ def chestnut_present() -> bool:
         "productId": int((d / "idProduct").read_text(), 16),
         "manufacturer": (d / "manufacturer").read_text().strip(),
         "product": (d / "product").read_text().strip(),
+        # `speed` is in Mbps and reflects the negotiated link. The 12V power-on
+        # race with USB-C enumeration can leave chestnut at 480/12 Mbps; only
+        # accept the device when it has reached USB 3.0 SuperSpeed (>= 5000
+        # Mbps) so tinygrad doesn't try to push ~70 MB of weights over a USB
+        # 2.0 pipe. The ChestnutLinkNegotiator in hardwared.py races to flip
+        # the link before modeld starts, so this gate is rarely long-lived.
+        "speedMbps": int((d / "speed").read_text().strip() or 0),
       }
-      if is_chestnut_runtime_device(device):
+      if is_chestnut_superspeed(device):
         return True
     except Exception:
       pass

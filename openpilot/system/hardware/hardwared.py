@@ -21,7 +21,10 @@ from openpilot.selfdrive.debug.onroad_block_log import OnroadBlockLogger
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE
 from openpilot.common.basedir import BASEDIR
-from openpilot.common.hardware.usb import CHESTNUT_FW_VERSION, chestnut_official_flash_mismatch, get_usb_state, set_usb_state
+from openpilot.common.hardware.usb import (CHESTNUT_FW_VERSION, CHESTNUT_LINK_RETRY_BUDGET,
+                                          CHESTNUT_LINK_RETRY_INTERVAL_S, USB_SUPERSPEED_MIN_MBPS,
+                                          chestnut_official_flash_mismatch, get_usb_state,
+                                          is_chestnut_runtime_device, set_usb_state)
 from openpilot.common.linux import LinuxSystemStats
 from openpilot.system.loggerd.config import get_available_percent
 from openpilot.common.swaglog import cloudlog
@@ -84,6 +87,72 @@ class Chestnut:
 ThermalBand = namedtuple("ThermalBand", ['min_temp', 'max_temp'])
 HardwareState = namedtuple("HardwareState", ['network_type', 'network_info', 'network_strength', 'network_stats',
                                              'network_metered', 'modem_temps', 'usb_state'])
+
+
+class ChestnutLinkNegotiator:
+  """Pokes the ASM link_up() ioctl when a chestnut eGPU is enumerated at < USB 3.0.
+
+  The chestnut ASM2464 USB-SSD bridge and the host C3XL USB-C controller can
+  finish enumeration before the PCIe link is up; on C3XL the 12V power-on and
+  the USB-C power delivery race and the link often stays at 480 Mbps (USB 2.0)
+  for tens of seconds. Without intervention modeld will see chestnutPresent=True
+  and try to load ~70 MB of weights over a USB 2.0 pipe, hanging the boot.
+
+  ChestnutLinkNegotiator reads the same USB state hardwared already samples,
+  and on detecting a chestnut device at low speed sends the vendor link_up()
+  ioctl. SP boot on C3XL takes ~60-90s, so the retry budget is set wide enough
+  (24 * 5s = 120s) to cover the worst-case race. The retry budget is per-boot
+  (in-memory only) -- if the link never comes up, the device is treated as
+  not-present for the rest of this boot and modeld falls back to the small
+  model gracefully instead of hanging.
+
+  This negotiator does not block or own state publication; it only kicks the
+  ioctl in the background. The visible state (chestnutPresent) flips as soon
+  as the next get_usb_state() cycle sees the speed climb above the gate.
+  """
+  def __init__(self):
+    self._attempts: dict[tuple[int, int], int] = {}
+    self._last_attempt_t: float = 0.0
+    self._gave_up: set[tuple[int, int]] = set()
+
+  def update(self, usb_state: list[dict]) -> None:
+    chestnut_devices = [d for d in usb_state if is_chestnut_runtime_device(d)]
+    if not chestnut_devices:
+      return
+    # If any chestnut device is already at SuperSpeed, don't poke -- the
+    # device tree sometimes reports both the USB 2.0 and USB 3.0 siblings of
+    # the same physical device, and we don't want to disturb an already-good
+    # link just because the USB 2.0 sibling is still visible.
+    if any(d.get("speedMbps", 0) >= USB_SUPERSPEED_MIN_MBPS for d in chestnut_devices):
+      return
+    for d in chestnut_devices:
+      key = (int(d.get("vendorId", 0)), int(d.get("productId", 0)))
+      if key in self._gave_up:
+        continue
+      attempts = self._attempts.get(key, 0)
+      if attempts >= CHESTNUT_LINK_RETRY_BUDGET:
+        if key not in self._gave_up:
+          cloudlog.warning(
+            f"chestnut link negotiation gave up after {attempts} attempts "
+            f"({attempts * CHESTNUT_LINK_RETRY_INTERVAL_S:.0f}s); "
+            f"device stays at {d.get('speedMbps')} Mbps, small-model fallback engaged"
+          )
+          self._gave_up.add(key)
+        continue
+      now = time.monotonic()
+      if now - self._last_attempt_t < CHESTNUT_LINK_RETRY_INTERVAL_S:
+        continue
+      self._attempts[key] = attempts + 1
+      self._last_attempt_t = now
+      cloudlog.warning(
+        f"chestnut at {d.get('speedMbps')} Mbps; "
+        f"poking ASM link_up() (attempt {self._attempts[key]}/{CHESTNUT_LINK_RETRY_BUDGET})"
+      )
+      try:
+        from openpilot.system.hardware.chestnut.flash import link_up
+        link_up()
+      except Exception:
+        cloudlog.exception("chestnut link_up() ioctl failed; will retry")
 
 
 def put_latest(state_queue: queue.Queue, state) -> None:
@@ -172,11 +241,13 @@ def hw_state_thread(end_event, hw_queue):
   """Handles non critical hardware state, and sends over queue"""
   count = 0
   prev_hw_state = None
+  chestnut_link_negotiator = ChestnutLinkNegotiator()
 
   while not end_event.is_set():
     # USB state is cheap and user-visible, so sample it every cycle. Network and
     # modem queries remain on the slower 10 second cadence.
     usb_state = get_usb_state()
+    chestnut_link_negotiator.update(usb_state)
     refresh_network = prev_hw_state is None or (count % int(10. / DT_HW)) == 0
     next_hw_state = None
     if refresh_network:
