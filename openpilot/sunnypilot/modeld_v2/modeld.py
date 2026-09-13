@@ -436,6 +436,11 @@ def main(demo=False):
   if use_extra_client:
     cloudlog.warning(f"connected extra cam with buffer size: {vipc_client_extra.buffer_len} ({vipc_client_extra.width} x {vipc_client_extra.height})")
 
+  if os.getenv('C3XL_IFE_ROAD_SIZE') == '1344x760':
+    if ((vipc_client_main.width, vipc_client_main.height) != (1344, 760) or
+        (use_extra_client and (vipc_client_extra.width, vipc_client_extra.height) != (1344, 760))):
+      raise RuntimeError('IFE road resize requested but actual camera dimensions do not match')
+
   cloudlog.warning("loading model")
   st = time.monotonic()
 
