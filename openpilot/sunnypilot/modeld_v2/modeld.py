@@ -8,9 +8,10 @@ See the LICENSE.md file in the root directory for more details.
 
 from collections.abc import Callable
 import os
+import sys
 os.environ['GMMU'] = '0'
 from openpilot.common.hardware import COMMA_HARDWARE
-from openpilot.selfdrive.modeld.helpers import chestnut_present, load_oob
+from openpilot.selfdrive.modeld.helpers import CHESTNUT_PCIE_READY, chestnut_present, load_oob
 from openpilot.sunnypilot.modeld_v2.egpu_loader import C3XL_MODEL_LOAD_TIMEOUT, configure_default_device, load_with_timeout
 from openpilot.sunnypilot.hardware.profile import HardwareProfile, get_hardware_profile
 configure_default_device(COMMA_HARDWARE, c3xl=get_hardware_profile() == HardwareProfile.C3XL)
@@ -455,6 +456,43 @@ def main(demo=False):
   publish_state = PublishState()
   chestnut_state = ChestnutState(pm, model.chestnut) if CHESTNUT else None
 
+  # --- chestnut self-heal state ---
+  # CHESTNUT was decided once at process start; if the eGPU wasn't ready then
+  # (dock powered together with the device, dock power-cycled later, or big
+  # model load failed) modeld used to stay on the small model until the user
+  # toggled offroad/onroad (which restarts this process). Instead, the loop
+  # below watches for the eGPU becoming fully healthy and exits so manager
+  # relaunches modeld with the big model (modeld_tinygrad has reap=True).
+  CHESTNUT_SELFHEAL_READY_S = 10.0     # eGPU must be fully healthy this long
+  CHESTNUT_SELFHEAL_MAX_RESTARTS = 2   # cap per boot; broken pkl won't loop forever
+  CHESTNUT_SELFHEAL_COOLDOWN_S = 90.0  # min spacing between restarts
+  # The counters live in Params because this process exits to trigger the
+  # restart -- in-process state would reset to zero on every relaunch and the
+  # cap above would never be enforced.
+  CHESTNUT_SELFHEAL_COUNT_PARAM = "ChestnutSelfhealCount"
+  CHESTNUT_SELFHEAL_LAST_PARAM = "ChestnutSelfhealLastMonoT"
+  chestnut_ready_s = 0.0
+  last_chestnut_probe_t = 0.0
+  modeld_restarts = params.get(CHESTNUT_SELFHEAL_COUNT_PARAM, return_default=True)
+  modeld_restarts = 0 if modeld_restarts is None else int(modeld_restarts)
+  last_modeld_restart_t = params.get(CHESTNUT_SELFHEAL_LAST_PARAM, return_default=True)
+  last_modeld_restart_t = 0.0 if last_modeld_restart_t is None else float(last_modeld_restart_t)
+  selfheal_first_t = time.monotonic()
+  # A fresh boot (counter timestamp older than boot) starts the budget over.
+  if last_modeld_restart_t > selfheal_first_t:
+    modeld_restarts = 0
+    last_modeld_restart_t = 0.0
+
+  def chestnut_fully_ready() -> bool:
+    """USB SuperSpeed present AND PCIe link trained to L0 (LTSSM 0x78)."""
+    if not chestnut_present():
+      return False
+    try:
+      from openpilot.system.hardware.chestnut.status import read_pcie_ltssm
+      return read_pcie_ltssm() == CHESTNUT_PCIE_READY
+    except Exception:
+      return False
+
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / model.constants.MODEL_FREQ)
   model_fps_filter = FirstOrderFilter(0., 2., 1. / model.constants.MODEL_FREQ, initialized=False)
@@ -586,6 +624,35 @@ def main(demo=False):
       long_delay = CP.longitudinalActuatorDelay + model.LONG_SMOOTH_SECONDS
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
+
+    # --- chestnut self-heal (hot-plug / simultaneous power-on recovery) ---
+    # Small model active but the eGPU is fully healthy -> restart so manager
+    # relaunches modeld and loads the big model. Covers: dock powered seconds
+    # after the device, dock power-cycled mid-drive (previously stuck at
+    # CHECKING until an offroad/onroad toggle), and big-model load failure
+    # recovery. Hysteresis + cooldown + restart cap keep this from thrashing.
+    if not model.chestnut:
+      now_s = time.monotonic()
+      if now_s - last_chestnut_probe_t >= 2.0:
+        last_chestnut_probe_t = now_s
+        if chestnut_fully_ready():
+          chestnut_ready_s += 2.0
+          if (chestnut_ready_s >= CHESTNUT_SELFHEAL_READY_S and
+              modeld_restarts < CHESTNUT_SELFHEAL_MAX_RESTARTS and
+              now_s - last_modeld_restart_t > CHESTNUT_SELFHEAL_COOLDOWN_S):
+            modeld_restarts += 1
+            last_modeld_restart_t = now_s
+            # Persist before exiting: the relaunched process reads these back so
+            # the per-boot cap and cooldown survive the restart.
+            params.put(CHESTNUT_SELFHEAL_COUNT_PARAM, modeld_restarts, block=True)
+            params.put(CHESTNUT_SELFHEAL_LAST_PARAM, last_modeld_restart_t, block=True)
+            cloudlog.warning(
+              f"eGPU healthy (USB SuperSpeed + PCIe L0) but small model active; "
+              f"restarting modeld to bring up the big model "
+              f"(restart {modeld_restarts}/{CHESTNUT_SELFHEAL_MAX_RESTARTS})")
+            sys.exit(0)
+        else:
+          chestnut_ready_s = 0.0
 
     if model_output is not None:
       model_output_t = time.monotonic()

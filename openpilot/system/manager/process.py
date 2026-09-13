@@ -68,6 +68,79 @@ class ManagerProcess(ABC):
   enabled = True
   name = ""
   shutting_down = False
+  # reap=True makes ensure_running() relaunch this process if it exits on its own
+  # while it is still supposed to be running. Off by default to preserve stock
+  # semantics; opt in only where a process deliberately exits to re-initialize
+  # (e.g. modeld_tinygrad re-evaluating the eGPU at startup).
+  reap = False
+  restart_delay_s = 5.0
+  restart_budget = 0            # 0 = unlimited
+  restart_window_s = 0.0        # 0 = count for the lifetime of the manager
+
+  def __init__(self) -> None:
+    self._reap_reported_pid: int | None = None
+    self._restart_deadline = 0.0
+    self._restart_count = 0
+    self._restart_first_t = 0.0
+
+  def dead(self) -> bool:
+    """True when a launched child has exited on its own and has not been reaped yet."""
+    return self.proc is not None and self.proc.exitcode is not None
+
+  def should_reap(self, now: float) -> bool:
+    """True when a reaped process is due to be reported/relaunched.
+
+    The first exit is handled immediately; restart_delay_s then throttles how
+    soon a *subsequent* exit may be reaped, so a crash-looping child cannot be
+    relaunched on every single manager tick.
+    """
+    return bool(self.reap and self.dead() and now >= self._restart_deadline)
+
+  def reap_dead_child(self, now: float) -> None:
+    """Report and (if allowed) relaunch a child that exited on its own.
+
+    No-op unless reap=True, so the default manager behaviour is unchanged.
+    """
+    if not self.reap or self.proc is None:
+      return
+    exit_code = self.proc.exitcode
+    if exit_code is None:
+      return
+    # Identify the exit by pid, not by exit code: a relaunched child that dies
+    # with the same code must still be reported (else it would never be
+    # restarted again).
+    pid = self.proc.pid
+    if pid is not None and pid == self._reap_reported_pid:
+      return
+    self._reap_reported_pid = pid
+
+    if not self._restart_allowed(now):
+      cloudlog.warning(f"process {self.name} exited with {exit_code}, not restarting")
+      self.proc = None
+      # Terminal state: ensure_running() must not relaunch it again, otherwise
+      # the process would be spawned once per manager tick and immediately
+      # abandoned.
+      self.enabled = False
+      return
+
+    cloudlog.warning(f"process {self.name} exited with {exit_code}, restarting")
+    self.proc = None
+    if self.restart_delay_s > 0.0:
+      self._restart_deadline = now + max(0.0, self.restart_delay_s)
+
+  def _restart_allowed(self, now: float) -> bool:
+    if self.restart_budget <= 0:
+      return True
+    if self.restart_window_s > 0.0 and now - self._restart_first_t > self.restart_window_s:
+      self._restart_count = 0
+      self._restart_first_t = now
+    if self.restart_budget > 0 and self._restart_count >= self.restart_budget:
+      cloudlog.warning(f"process {self.name} restart budget exhausted ({self._restart_count}), giving up")
+      return False
+    self._restart_count += 1
+    if self._restart_count == 1:
+      self._restart_first_t = now
+    return True
 
   @abstractmethod
   def start(self) -> None:
@@ -132,13 +205,19 @@ class ManagerProcess(ABC):
 
 
 class NativeProcess(ManagerProcess):
-  def __init__(self, name, cwd, cmdline, should_run, enabled=True, sigkill=False):
+  def __init__(self, name, cwd, cmdline, should_run, enabled=True, sigkill=False,
+               reap=False, restart_delay_s=5.0, restart_budget=0, restart_window_s=0.0):
+    super().__init__()
     self.name = name
     self.cwd = cwd
     self.cmdline = cmdline
     self.should_run = should_run
     self.enabled = enabled
     self.sigkill = sigkill
+    self.reap = reap
+    self.restart_delay_s = restart_delay_s
+    self.restart_budget = restart_budget
+    self.restart_window_s = restart_window_s
     self.launcher = nativelauncher
 
   def start(self) -> None:
@@ -157,12 +236,18 @@ class NativeProcess(ManagerProcess):
 
 
 class PythonProcess(ManagerProcess):
-  def __init__(self, name, module, should_run, enabled=True, sigkill=False):
+  def __init__(self, name, module, should_run, enabled=True, sigkill=False,
+               reap=False, restart_delay_s=5.0, restart_budget=0, restart_window_s=0.0):
+    super().__init__()
     self.name = name
     self.module = module
     self.should_run = should_run
     self.enabled = enabled
     self.sigkill = sigkill
+    self.reap = reap
+    self.restart_delay_s = restart_delay_s
+    self.restart_budget = restart_budget
+    self.restart_window_s = restart_window_s
     self.launcher = launcher
 
   def start(self) -> None:
@@ -183,6 +268,7 @@ class DaemonProcess(ManagerProcess):
   """Python process that has to stay running across manager restart.
   This is used for athena so you don't lose SSH access when restarting manager."""
   def __init__(self, name, module, param_name, enabled=True):
+    super().__init__()
     self.name = name
     self.module = module
     self.param_name = param_name
@@ -227,12 +313,20 @@ def ensure_running(procs: ValuesView[ManagerProcess], started: bool, params: Par
   if not_run is None:
     not_run = []
 
+  now = time.monotonic()
   running = []
   for p in procs:
     if p.enabled and p.name not in not_run and p.should_run(started, params, CP):
       running.append(p)
     else:
       p.stop(block=False)
+
+  # Relaunch opted-in processes whose child exited on its own while it is still
+  # supposed to be running. start() would otherwise no-op because self.proc is
+  # still set, and the process would stay dead until an offroad/onroad toggle.
+  for p in running:
+    if p.should_reap(now):
+      p.reap_dead_child(now)
 
   for p in running:
     p.start()

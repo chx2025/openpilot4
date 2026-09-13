@@ -199,7 +199,13 @@ procs += [
 
   # Models
   PythonProcess("models_manager", "openpilot.sunnypilot.models.manager", only_offroad),
-  NativeProcess("modeld_tinygrad", "openpilot/sunnypilot/modeld_v2", ["./modeld"], and_(only_onroad, is_tinygrad_model)),
+  # modeld_tinygrad deliberately exits when it detects the eGPU has become
+  # healthy after having started on the small model, so that manager relaunches
+  # it and it can load the big model (see sunnypilot/modeld_v2/modeld.py). It
+  # must therefore be reaped and relaunched; without this a single self-heal
+  # exit would leave modeld dead until an offroad/onroad toggle.
+  NativeProcess("modeld_tinygrad", "openpilot/sunnypilot/modeld_v2", ["./modeld"], and_(only_onroad, is_tinygrad_model),
+                reap=True, restart_delay_s=5.0),
 
   # Backup
   PythonProcess("backup_manager", "openpilot.sunnypilot.sunnylink.backups.manager", and_(only_offroad, sunnylink_ready_shim)),

@@ -28,6 +28,12 @@ USB_SUPERSPEED_MIN_MBPS = 5000
 # and letting the speed gate above force the small-model fallback.
 CHESTNUT_LINK_RETRY_INTERVAL_S = 5.0
 CHESTNUT_LINK_RETRY_BUDGET = 24  # 24 * 5s = 120s total
+# VBUS power-cycle escalation: if this many link_up() pokes failed to lift the
+# link out of USB 2.0, cycle the smb2-vbus rail (software equivalent of
+# powering the dock a few seconds after the host). Budget limits total cycles
+# per boot to avoid thrashing a genuinely broken dock.
+CHESTNUT_VBUS_CYCLE_AFTER_POKES = 3
+CHESTNUT_VBUS_CYCLE_BUDGET = 3
 
 
 def is_chestnut_runtime_device(device: dict) -> bool:

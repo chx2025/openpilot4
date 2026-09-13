@@ -136,6 +136,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ChestnutLoading", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, BOOL}},
     {"ChestnutLoadingProgress", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, INT, "0"}},
     {"ChestnutModelError", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, BOOL}},
+    // Small->big model self-heal budget. Cleared only on a fresh manager start
+    // (i.e. reboot), NOT on offroad/onroad transitions: otherwise a single
+    // settings toggle would refill the budget and the cap would be meaningless.
+    {"ChestnutSelfhealCount", {CLEAR_ON_MANAGER_START, INT, "0"}},
+    {"ChestnutSelfhealLastMonoT", {CLEAR_ON_MANAGER_START, FLOAT, "0.0"}},
     {"UsbGpuEjectError", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, STRING}},
     {"UsbGpuEjectRequest", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, BOOL}},
     {"UsbGpuEjectStatus", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, STRING}},

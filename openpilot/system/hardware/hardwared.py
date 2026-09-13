@@ -22,7 +22,8 @@ from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.hardware.usb import (CHESTNUT_FW_VERSION, CHESTNUT_LINK_RETRY_BUDGET,
-                                          CHESTNUT_LINK_RETRY_INTERVAL_S, USB_SUPERSPEED_MIN_MBPS,
+                                          CHESTNUT_LINK_RETRY_INTERVAL_S, CHESTNUT_VBUS_CYCLE_AFTER_POKES,
+                                          CHESTNUT_VBUS_CYCLE_BUDGET, USB_SUPERSPEED_MIN_MBPS,
                                           chestnut_official_flash_mismatch, get_usb_state,
                                           is_chestnut_runtime_device, set_usb_state)
 from openpilot.common.linux import LinuxSystemStats
@@ -109,14 +110,39 @@ class ChestnutLinkNegotiator:
   This negotiator does not block or own state publication; it only kicks the
   ioctl in the background. The visible state (chestnutPresent) flips as soon
   as the next get_usb_state() cycle sees the speed climb above the gate.
+
+  Escalation ladder (user-observed failure: C3XL and dock powered simultaneously
+  -> eGPU never comes online; dock powered a few seconds later -> always fine):
+  1. link_up() pokes (cheap, non-disruptive)
+  2. after CHESTNUT_VBUS_CYCLE_AFTER_POKES failed pokes, cycle the USB VBUS
+     rail (smb2-vbus regulator) -- the software equivalent of "power the dock
+     a few seconds after the host", which empirically always recovers the
+     device. Limited to CHESTNUT_VBUS_CYCLE_BUDGET cycles per boot.
+  Also: per-device attempt state resets whenever the device disappears from
+  the bus (dock power cycle / re-plug), so a hot-plug after a give-up gets a
+  fresh negotiation instead of staying dead until reboot.
   """
   def __init__(self):
     self._attempts: dict[tuple[int, int], int] = {}
     self._last_attempt_t: float = 0.0
     self._gave_up: set[tuple[int, int]] = set()
+    self._vbus_cycles: dict[tuple[int, int], int] = {}
+    self._last_keys: set[tuple[int, int]] = set()
 
   def update(self, usb_state: list[dict]) -> None:
     chestnut_devices = [d for d in usb_state if is_chestnut_runtime_device(d)]
+    # A disappeared device (dock power cycle, re-plug, VBUS cycle) resets its
+    # negotiation state: give-up and attempt counters must not survive into
+    # the newly enumerated device, otherwise a hot-plug can never recover
+    # (user-observed: dock power cycle stuck at CHECKING forever).
+    current_keys = {(int(d.get("vendorId", 0)), int(d.get("productId", 0))) for d in chestnut_devices}
+    for key in self._last_keys - current_keys:
+      if key in self._gave_up or key in self._attempts:
+        cloudlog.warning(f"chestnut {key} disappeared; resetting link negotiation state")
+      self._attempts.pop(key, None)
+      self._vbus_cycles.pop(key, None)
+      self._gave_up.discard(key)
+    self._last_keys = current_keys
     if not chestnut_devices:
       return
     # If any chestnut device is already at SuperSpeed, don't poke -- the
@@ -141,6 +167,26 @@ class ChestnutLinkNegotiator:
         continue
       now = time.monotonic()
       if now - self._last_attempt_t < CHESTNUT_LINK_RETRY_INTERVAL_S:
+        continue
+      attempts = self._attempts.get(key, 0)
+      # Escalation: pokes alone didn't lift the link out of USB 2.0 -> cycle
+      # the VBUS rail. This re-powers the dock side, forcing the ASM2464 and
+      # GPU to redo their power-up + PCIe training after the host is already
+      # stable, which is exactly the empirically-good power-on ordering.
+      vbus_cycles = self._vbus_cycles.get(key, 0)
+      if attempts >= CHESTNUT_VBUS_CYCLE_AFTER_POKES and vbus_cycles < CHESTNUT_VBUS_CYCLE_BUDGET:
+        self._last_attempt_t = now
+        self._vbus_cycles[key] = vbus_cycles + 1
+        self._attempts[key] = 0  # fresh poke budget after the power cycle
+        cloudlog.warning(
+          f"chestnut still at {d.get('speedMbps')} Mbps after {attempts} link_up() pokes; "
+          f"cycling USB VBUS (cycle {self._vbus_cycles[key]}/{CHESTNUT_VBUS_CYCLE_BUDGET})"
+        )
+        try:
+          from openpilot.system.hardware.chestnut.flash import vbus_cycle
+          vbus_cycle()
+        except Exception:
+          cloudlog.exception("chestnut VBUS cycle failed; will retry")
         continue
       self._attempts[key] = attempts + 1
       self._last_attempt_t = now
