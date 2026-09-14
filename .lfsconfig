@@ -1,4 +1,8 @@
 [lfs]
-	url = https://gitlab.com/sunnypilot/public/sunnypilot-new-lfs.git/info/lfs
-	pushurl = ssh://git@gitlab.com/sunnypilot/public/sunnypilot-new-lfs.git
+	# 原 LFS 服务器在 gitlab.com，国内/弱网下下载 268 个对象(约 116MB，含 61MB
+	# 的 driving_supercombo.onnx) 经常超时，设备安装会卡在 92% 后失败。
+	# 已把全部 LFS 对象镜像到 GitHub LFS，这里改指向 GitHub。
+	# 上游地址（需要时改回）：https://gitlab.com/sunnypilot/public/sunnypilot-new-lfs.git/info/lfs
+	url = https://github.com/chx2025/openpilot.git/info/lfs
+	pushurl = https://github.com/chx2025/openpilot.git/info/lfs
 	locksverify = false
