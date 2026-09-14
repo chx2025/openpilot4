@@ -4,9 +4,19 @@ set -e
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
 ROOT="$(git -C "$DIR" rev-parse --show-toplevel)"
 
+# 弱网安装辅助库（缺失时自动降级为原有行为）
+if [[ -f "$DIR/lib/net_retry.sh" ]]; then
+  # shellcheck source=lib/net_retry.sh
+  source "$DIR/lib/net_retry.sh"
+fi
+
 function retry() {
   local attempts=$1
   shift
+  if [[ "${NET_LIB_LOADED:-0}" == "1" ]]; then
+    net_retry "$attempts" "$@"
+    return $?
+  fi
   for i in $(seq 1 "$attempts"); do
     if "$@"; then
       return 0
@@ -47,8 +57,12 @@ function install_linux_deps() {
     # the native package managers are slow, so skip if we can
     echo "[ ] system packages already installed t=$SECONDS"
   elif command -v apt-get > /dev/null 2>&1; then
-    $SUDO apt-get update
-    $SUDO apt-get install -y --no-install-recommends ca-certificates build-essential curl libcurl4-openssl-dev locales git xclip wl-clipboard
+    # 官方源慢/不通时自动换国内镜像（AGNOS 上不动系统源）
+    net_apt_mirror_setup 2> /dev/null || true
+    # shellcheck disable=SC2046
+    retry 3 $SUDO apt-get update $(net_apt_args)
+    # shellcheck disable=SC2046
+    retry 3 $SUDO apt-get install -y --no-install-recommends $(net_apt_args) ca-certificates build-essential curl libcurl4-openssl-dev locales git xclip wl-clipboard
   elif command -v dnf > /dev/null 2>&1; then
     $SUDO dnf install -y ca-certificates gcc gcc-c++ make curl libcurl-devel glibc-langpack-en git
   elif command -v yum > /dev/null 2>&1; then
@@ -93,30 +107,67 @@ function install_linux_deps() {
   fi
 }
 
+function install_uv() {
+  # 依次尝试：官方脚本 → GitHub 反代 → PyPI（可走国内镜像）
+  local installers=(
+    "https://astral.sh/uv/install.sh"
+    "https://ghfast.top/https://github.com/astral-sh/uv/releases/latest/download/uv-installer.sh"
+    "https://gh.llkk.cc/https://github.com/astral-sh/uv/releases/latest/download/uv-installer.sh"
+  )
+  local url cand
+  for url in "${installers[@]}"; do
+    echo "installing uv from $url ..."
+    if retry 3 sh -c "curl --retry 5 --retry-delay 5 --retry-all-errors -LsSf '$url' | UV_GITHUB_TOKEN='${GITHUB_TOKEN:-}' sh"; then
+      for cand in "$HOME/.local/bin" "$HOME/.cargo/bin"; do
+        [[ -x "$cand/uv" ]] && PATH="$cand:$PATH" && export PATH
+      done
+      command -v uv > /dev/null 2>&1 && return 0
+    fi
+  done
+
+  echo "installing uv via pip ..."
+  retry 3 python3 -m pip install --user uv && return 0
+  retry 3 pip3 install --user uv && return 0
+  return 1
+}
+
 function install_python_deps() {
   # Increase the pip timeout to handle TimeoutError
   export PIP_DEFAULT_TIMEOUT=200
+  export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-180}"
+  export UV_CONCURRENT_DOWNLOADS="${UV_CONCURRENT_DOWNLOADS:-4}"
+  export UV_FETCH_RETRIES="${UV_FETCH_RETRIES:-5}"
 
   cd "$ROOT"
 
+  # PyPI 直连慢时自动切国内源（只换下载地址，不影响 uv.lock 的 hash 校验）
+  if [[ "${NET_LIB_LOADED:-0}" == "1" ]]; then
+    net_pip_index_setup
+  fi
+
   if ! command -v "uv" > /dev/null 2>&1; then
-    echo "installing uv..."
-    # TODO: outer retry can be removed once https://github.com/axodotdev/cargo-dist/pull/2311 is merged
-    retry 3 sh -c 'curl --retry 5 --retry-delay 5 --retry-all-errors -LsSf https://astral.sh/uv/install.sh | UV_GITHUB_TOKEN="${GITHUB_TOKEN:-}" sh'
-    UV_BIN="$HOME/.local/bin"
-    PATH="$UV_BIN:$PATH"
+    if ! install_uv; then
+      echo "uv 安装失败，可手动安装后重试：https://docs.astral.sh/uv/getting-started/installation/"
+      return 1
+    fi
   fi
 
   echo "updating uv..."
   # ok to fail, can also fail due to installing with brew
-  uv self update || true
+  timeout 90 uv self update || true
 
   echo "installing python packages..."
-  uv sync --frozen --all-extras
+  retry 3 uv sync --frozen --all-extras
   source .venv/bin/activate
 }
 
 # --- Main ---
+
+if [[ "${NET_LIB_LOADED:-0}" == "1" ]]; then
+  # 单独运行本脚本时也要把弱网参数配上（幂等，重复执行无副作用）
+  net_git_config_weak_network
+  net_lfs_config
+fi
 
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
   install_linux_deps

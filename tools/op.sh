@@ -8,6 +8,14 @@ fi
 
 set -e
 
+# 弱网安装辅助库：镜像探测、指数退避重试、子模块/LFS 断点续跑
+# 库文件缺失时，所有调用自动降级为原本的行为，不影响正常使用
+OP_TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" > /dev/null && pwd)"
+if [[ -f "$OP_TOOLS_DIR/lib/net_retry.sh" ]]; then
+  # shellcheck source=lib/net_retry.sh
+  source "$OP_TOOLS_DIR/lib/net_retry.sh"
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 UNDERLINE='\033[4m'
@@ -23,6 +31,11 @@ fi
 function retry() {
   local attempts=$1
   shift
+  # 有弱网库时交给它：指数退避，避免固定 5s 重试把时间耗在无效等待上
+  if [[ "${NET_LIB_LOADED:-0}" == "1" ]]; then
+    net_retry "$attempts" "$@"
+    return $?
+  fi
   for i in $(seq 1 "$attempts"); do
     if "$@"; then
       return 0
@@ -33,6 +46,45 @@ function retry() {
     fi
   done
   return 1
+}
+
+# 子模块：先整体并行来一次；失败后逐个模块重试，每失败一次换一条线路，
+# 已经拉好的模块自动跳过 —— 中断后重跑不会从头再来
+function op_update_submodules() {
+  if [[ "${NET_LIB_LOADED:-0}" == "1" ]]; then
+    net_submodules_update "$OPENPILOT_ROOT" "${OP_NET_RETRIES:-8}" "${OP_SUBMODULE_DEPTH:-0}"
+    return $?
+  fi
+  retry 3 git submodule update --jobs 4 --init --recursive
+}
+
+# LFS：反复拉取直到补齐，单个大文件失败不会让整批前功尽弃
+function op_pull_lfs() {
+  if [[ "${NET_LIB_LOADED:-0}" == "1" ]]; then
+    net_lfs_pull "$OPENPILOT_ROOT" "${OP_NET_RETRIES:-8}"
+    return $?
+  fi
+  retry 3 git lfs pull
+}
+
+# 只补拉 LFS 文件：op lfs（网络恢复后反复执行即可）
+function op_lfs() {
+  op_before_cmd
+  op_pull_lfs
+}
+
+# 网络诊断 / 切换线路：op net [status|auto|off|<镜像前缀>]
+function op_net() {
+  if [[ "${NET_LIB_LOADED:-0}" != "1" ]]; then
+    echo "找不到 tools/lib/net_retry.sh，无法使用网络配置功能"
+    return 1
+  fi
+  case "${1:-status}" in
+    status)  net_mirror_status ;;
+    off)     net_mirror_clear; net_ok "已清除镜像重写，恢复直连" ;;
+    auto|on) net_init; net_mirror_status ;;
+    *)       OP_NET_MIRROR="$1" net_init ;;
+  esac
 }
 
 function op_run_command() {
@@ -197,11 +249,17 @@ EOF
   op_check_openpilot_dir
   op_check_os
 
+  # 弱网环境下先做一次网络自适应：设置 git/git-lfs 超时参数，
+  # 直连不通时自动挑选可用的 GitHub / GitLab 镜像
+  if [[ "${NET_LIB_LOADED:-0}" == "1" ]]; then
+    net_init
+  fi
+
   # Submodules must be present before uv sync: pyproject path sources
   # (pandacan, opendbc, msgq, ...) live in the submodule checkouts.
   echo "Getting git submodules..."
   st="$(date +%s)"
-  if ! retry 3 git submodule update --jobs 4 --init --recursive; then
+  if ! op_update_submodules; then
     echo -e " ↳ [${RED}✗${NC}] Getting git submodules failed!"
     return 1
   fi
@@ -222,7 +280,7 @@ EOF
 
   echo "Pulling git lfs files..."
   st="$(date +%s)"
-  if ! retry 3 git lfs pull; then
+  if ! op_pull_lfs; then
     echo -e " ↳ [${RED}✗${NC}] Pulling git lfs files failed!"
     return 1
   fi
@@ -437,6 +495,8 @@ function op_default() {
   echo -e "  ${BOLD}esim${NC}         Manage eSIM profiles on your comma device"
   echo -e "  ${BOLD}venv${NC}         Activate the python virtual environment"
   echo -e "  ${BOLD}setup${NC}        Install the 'op' tool and openpilot dependencies"
+  echo -e "  ${BOLD}lfs${NC}          Pull git-lfs files (可反复执行直到补齐，弱网安装用)"
+  echo -e "  ${BOLD}net${NC}          网络诊断 / 切换镜像 (status|auto|off|<前缀>)"
   echo -e "  ${BOLD}build${NC}        Run the openpilot build system in the current working directory"
   echo -e "  ${BOLD}switch${NC}       Switch to a different git branch with a clean slate (nukes any changes)"
   echo -e "  ${BOLD}start${NC}        Starts (or restarts) openpilot"
@@ -495,6 +555,8 @@ function _op() {
     check )         shift 1; op_check "$@" ;;
     esim )          shift 1; op_esim "$@" ;;
     setup )         shift 1; op_setup "$@" ;;
+    lfs )           shift 1; op_lfs "$@" ;;
+    net )           shift 1; op_net "$@" ;;
     build )         shift 1; op_build "$@" ;;
     juggle )        shift 1; op_juggle "$@" ;;
     cabana )        shift 1; op_cabana "$@" ;;
