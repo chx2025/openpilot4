@@ -74,11 +74,24 @@ done
 DIR="${DIR:-$DEFAULT_DIR}"
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" > /dev/null && pwd)"
-if [[ -f "$SELF_DIR/lib/net_retry.sh" ]]; then
+NET_LIB="$SELF_DIR/lib/net_retry.sh"
+
+# 支持单文件自举：只拿到本脚本也能跑（例如车机上 curl 下来直接执行）
+if [[ ! -f "$NET_LIB" ]]; then
+  echo "未找到 $NET_LIB，尝试从仓库获取..."
+  raw_base="${REPO%.git}"
+  if [[ "$raw_base" == *github.com* ]]; then
+    raw_base="${raw_base/github.com/raw.githubusercontent.com}"
+    mkdir -p "$SELF_DIR/lib"
+    curl --retry 5 --retry-delay 3 --retry-all-errors -fsSL "${raw_base}/${BRANCH}/tools/lib/net_retry.sh" -o "$NET_LIB" || true
+  fi
+fi
+
+if [[ -f "$NET_LIB" ]]; then
   # shellcheck source=lib/net_retry.sh
-  source "$SELF_DIR/lib/net_retry.sh"
+  source "$NET_LIB"
 else
-  echo "缺少 $SELF_DIR/lib/net_retry.sh"
+  echo "缺少 $NET_LIB，请把它和本脚本一起放到 tools/ 下"
   exit 1
 fi
 
