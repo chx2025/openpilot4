@@ -187,6 +187,35 @@
             min-width: 120px;
         }
 
+        /* 多选控件（如「xiaoge 盲区合并来源」） */
+        .param-multiselect {
+            flex: 1;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 14px;
+            padding: 6px 8px;
+            border: 1px solid #555;
+            border-radius: 4px;
+            background: #2d2d2d;
+        }
+
+        .param-check {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 13px;
+            color: #e0e0e0;
+            white-space: nowrap;
+            cursor: pointer;
+        }
+
+        .param-checkbox {
+            width: 16px;
+            height: 16px;
+            accent-color: #4CAF50;
+            cursor: pointer;
+        }
+
         .param-number-controls {
             display: flex;
             align-items: center;
@@ -803,6 +832,22 @@
                 uiType: "number",
                 category: "原车前侧盲区"
             },
+            "XiaogeBlindSources": {
+                chineseName: "盲区合并来源",
+                defaultValue: 95,
+                description: "选择哪些外挂盲区源并入 carState（供变道判断）。可多选，保存值为各位之和，默认 95（除“车道实线”外全选）",
+                uiType: "multiselect",
+                options: [
+                    { value: 1,  text: "摄像头盲区" },
+                    { value: 2,  text: "激光雷达-侧方" },
+                    { value: 4,  text: "激光雷达-前角" },
+                    { value: 8,  text: "激光雷达-后角" },
+                    { value: 16, text: "车身盲区" },
+                    { value: 64, text: "原车前雷达前侧" },
+                    { value: 32, text: "车道实线(勾选后无条件挡变道)" }
+                ],
+                category: "盲区合并来源"
+            },
         };
 
         var categoryColors = {
@@ -814,6 +859,7 @@
             "ATC参数": "#009688",
             "速度参数": "#FF9800",
             "原车前侧盲区": "#00BCD4",
+            "盲区合并来源": "#795548",
         };
 
         var NavParamsData = {};
@@ -993,6 +1039,17 @@
                            'onfocus="this.select()">' +
                     '<button type="button" class="number-btn" onclick="adjustNumber(\'' + key + '\', ' + config.step + ')">+</button>' +
                 '</div>';
+            } else if (config.uiType === 'multiselect') {
+                var maskValue = parseInt(value, 10) || 0;
+                var boxes = '';
+                for (var m = 0; m < config.options.length; m++) {
+                    var mopt = config.options[m];
+                    var checked = (maskValue & mopt.value) ? ' checked' : '';
+                    boxes += '<label class="param-check">' +
+                        '<input type="checkbox" class="param-checkbox" data-bit="' + mopt.value + '"' + checked + '> ' +
+                        mopt.text + '</label>';
+                }
+                return '<div class="param-multiselect" id="' + key + '">' + boxes + '</div>';
             } else {
                 return '<input type="text" class="param-input" id="' + key + '" value="' + value + '" readonly>';
             }
@@ -1217,6 +1274,14 @@
                             // 允许直接键盘输入后，用户可能清空字段，避免把 NaN 发给服务端
                             if (isNaN(value)) {
                                 value = (NavParamsData[key] !== undefined) ? NavParamsData[key] : paramConfig[key].defaultValue;
+                            }
+                        } else if (paramConfig[key].uiType === 'multiselect') {
+                            var mboxes = element.querySelectorAll('input[type="checkbox"]');
+                            value = 0;
+                            for (var b = 0; b < mboxes.length; b++) {
+                                if (mboxes[b].checked) {
+                                    value |= parseInt(mboxes[b].getAttribute('data-bit'), 10);
+                                }
                             }
                         } else {
                             value = element.value;

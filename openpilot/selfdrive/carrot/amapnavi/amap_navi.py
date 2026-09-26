@@ -463,6 +463,29 @@ class AmapNaviServ:
     msg.amapNavi.blindCarR = bool(shared.lidar_car_rblind)
     msg.amapNavi.laneBlindR = bool(shared.right_lane_blind)
 
+    # ---- 交给 card.py 合并的归一化贡献值（供变道判断，不依赖 ShareData）----
+    # 盲区：按「盲区合并来源」位掩码筛选后，并成每侧一个 bool
+    #       （carState/desire_helper 每侧只吃一个 bool，明细留给 amapnavi 自己的 UI）
+    mask = unified_params.get_int("XiaogeBlindSources")
+
+    def _src(bit, value):
+      return bool(value) and bool(mask & bit)
+
+    msg.amapNavi.xiaogeBlindL = bool(
+      _src(1, shared.left_blind) or _src(2, shared.lidar_lblind) or _src(4, shared.lidar_lfblind)
+      or _src(8, shared.lidar_lbblind) or _src(16, shared.lidar_car_lblind)
+      or _src(32, shared.left_lane_blind) or _src(64, shared.leftFrontBlind))
+    msg.amapNavi.xiaogeBlindR = bool(
+      _src(1, shared.right_blind) or _src(2, shared.lidar_rblind) or _src(4, shared.lidar_rfblind)
+      or _src(8, shared.lidar_rbblind) or _src(16, shared.lidar_car_rblind)
+      or _src(32, shared.right_lane_blind) or _src(64, shared.rightFrontBlind))
+
+    # 虚实线：归一为 -1 未知 / 0 虚线 / 1 实线（>=1 视为实线，与 solid_line_blind 口径一致）
+    lane_online = bool(self.transport.lane_online)
+    msg.amapNavi.xiaogeLineValid = lane_online
+    msg.amapNavi.xiaogeLeftLine = (1 if shared.left_lane >= 1 else 0) if lane_online else -1
+    msg.amapNavi.xiaogeRightLine = (1 if shared.right_lane >= 1 else 0) if lane_online else -1
+
     # 位图字段仅作兼容保留（旧代码/诊断用），UI 已改用上面的独立字段
     msg.amapNavi.leftBlind = ((8 if shared.left_lane_blind else 0) + (4 if shared.lidar_car_lblind else 0) +
                               (2 if shared.left_blind else 0) + (1 if shared.lidar_lblind else 0) +

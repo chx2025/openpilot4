@@ -26,6 +26,7 @@ from openpilot.selfdrive.car.openpilot_toggle import CruiseMainOpenpilotToggle
 from openpilot.selfdrive.carrot.xiaoge.xiaoge_vision import (
   XiaogeVisionResult,
   apply_xiaoge_vision_result,
+  merge_xiaoge_lane_type,
   parse_xiaoge_vision_payload,
 )
 
@@ -76,7 +77,7 @@ class Car:
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
     self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'carrotMan', 'longitudinalPlan',
-                                   'radarState', 'modelV2', 'drivingModelData', 'customReservedRawData0'])
+                                   'radarState', 'modelV2', 'drivingModelData', 'customReservedRawData0', 'amapNavi'])
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'liveTracks'])
 
     self.can_rcv_cum_timeout_counter = 0
@@ -225,6 +226,19 @@ class Car:
           cloudlog.warning(f"invalid Xiaoge vision payload: {error}")
           self.xiaoge_vision_error_log_at_ns = sm_done_ns
     apply_xiaoge_vision_result(CS, self.xiaoge_vision_result, sm_done_ns)
+    # amapnavi 外挂盲区/虚实线：直接合并进 carState，不依赖 ShareData（xiaoge 发布进程）。
+    # 归一化与来源筛选已在 amapnavi 侧完成（见 amap_navi.public_amap_navi / XiaogeBlindSources）。
+    if self.sm.alive['amapNavi']:
+      amap = self.sm['amapNavi']
+      # 盲区：与 xiaoge/OEM 同为 OR（只加不清）
+      CS.leftBlindspot = CS.leftBlindspot or bool(amap.xiaogeBlindL)
+      CS.rightBlindspot = CS.rightBlindspot or bool(amap.xiaogeBlindR)
+      # 虚实线：外挂线源在线时覆盖同侧类型位（保留 OEM 颜色编码）
+      if bool(amap.xiaogeLineValid):
+        if int(amap.xiaogeLeftLine) >= 0:
+          CS.leftLaneLine = merge_xiaoge_lane_type(CS.leftLaneLine, int(amap.xiaogeLeftLine))
+        if int(amap.xiaogeRightLine) >= 0:
+          CS.rightLaneLine = merge_xiaoge_lane_type(CS.rightLaneLine, int(amap.xiaogeRightLine))
     #self.t1 = time.monotonic()
 
     can_rcv_valid = len(can_strs) > 0
