@@ -45,7 +45,13 @@ cd $BUILD_DIR
 
 # Local paths (relative to $BUILD_DIR) that must NOT be published. Space
 # separated. Everything listed here is moved aside and restored afterwards.
-LOCAL_EXCLUDE_PATHS="amapnavi_bak"
+#
+# 注意：`git add -f .` 会无视所有 .gitignore（根目录和各模块的），所以仅仅写进
+# .gitignore 是无效的 —— 运行时写在源码目录里的文件必须靠"移出目录树"来排除。
+#   amapnavi_bak/                        本地备份目录
+#   amapnavi/nav_params.json             UnifiedParams(config.py) 运行时写入的参数文件
+#   xiaoge/v_asm_config.json             V-ASM 本地盲区多边形（网页编辑后生成）
+LOCAL_EXCLUDE_PATHS="amapnavi_bak openpilot/selfdrive/carrot/amapnavi/nav_params.json openpilot/selfdrive/carrot/xiaoge/v_asm_config.json"
 
 if [ -z "$SKIP_CONFIRM" ]; then
   echo "This will: back up + exclude eGPU big-model artifacts and local backup"
@@ -229,9 +235,11 @@ if git ls-files | grep -q 'modeld/models/\.big_model_build_stamp'; then
   FAILED=1
 fi
 for p in $LOCAL_EXCLUDE_PATHS; do
-  if git ls-files | grep -q "^$p/"; then
+  # 同时支持目录(amapnavi_bak/)和文件(…/nav_params.json)：匹配该路径本身或其下的内容。
+  # 原来只 grep "^$p/"（结尾带斜杠），文件路径永远匹配不到，等于没校验。
+  if git ls-files | grep -qE "^${p}(/|$)"; then
     echo "    ERROR: excluded local path is still tracked: $p"
-    git ls-files | grep "^$p/" | head -5
+    git ls-files | grep -E "^${p}(/|$)" | head -5
     FAILED=1
   fi
 done

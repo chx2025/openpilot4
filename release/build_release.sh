@@ -51,6 +51,29 @@ if [ -d "$BUILD_DIR/pydeps" ]; then
   echo "    pydeps -> /data/pydeps_pub_keep (restored after publish)"
 fi
 
+# ---------------------------------------------------------------------------
+# Runtime files written inside the source tree must not be published.
+# `git add -f .` below overrides every .gitignore (root and per-module), so
+# writing them into .gitignore is NOT enough: they have to leave the tree.
+#   amapnavi/nav_params.json   UnifiedParams(config.py) 运行时参数文件
+#   xiaoge/v_asm_config.json   V-ASM 本地盲区多边形（网页编辑后生成）
+# ---------------------------------------------------------------------------
+LOCAL_EXCLUDE_PATHS="openpilot/selfdrive/carrot/amapnavi/nav_params.json openpilot/selfdrive/carrot/xiaoge/v_asm_config.json"
+LOCAL_KEEP="/data/release_local_keep"
+echo "==> Excluding runtime files from the release"
+rm -rf "$LOCAL_KEEP"
+mkdir -p "$LOCAL_KEEP"
+MOVED_LOCAL=""
+for p in $LOCAL_EXCLUDE_PATHS; do
+  if [ -e "$BUILD_DIR/$p" ]; then
+    mkdir -p "$LOCAL_KEEP/$(dirname "$p")"
+    mv "$BUILD_DIR/$p" "$LOCAL_KEEP/$p"
+    MOVED_LOCAL="$MOVED_LOCAL $p"
+    echo "    $p -> $LOCAL_KEEP/$p"
+  fi
+done
+[ -n "$MOVED_LOCAL" ] || echo "    none present"
+
 rm -rf .git
 git init
 git remote add origin https://jihulab.com/fishop/openpilot.git
@@ -79,7 +102,12 @@ rm -f openpilot/selfdrive/modeld/models/.build_stamp
 # ship the prebuilt release WITHOUT the .onnx model inputs (the tinygrad .pkl
 # artifacts + prebuilt marker are enough). Keep the files on disk so the device
 # can still rebuild if ever needed; just don't commit them.
-echo 'openpilot/selfdrive/modeld/models/*.onnx' > .gitignore
+{
+  echo 'openpilot/selfdrive/modeld/models/*.onnx'
+  # 安全网：`git add -f .` 会无视 .gitignore，真正的排除靠上面把文件移出目录树。
+  echo 'openpilot/selfdrive/carrot/amapnavi/nav_params.json'
+  echo 'openpilot/selfdrive/carrot/xiaoge/v_asm_config.json'
+} > .gitignore
 
 find third_party/ -name '*x86*' -exec rm -r {} +
 find third_party/ -name '*Darwin*' -exec rm -r {} +
@@ -109,6 +137,32 @@ echo -n "$STAMP" > .build_stamp
 git add -f .build_stamp
 git commit -m "${VERSION}-stamp"
 
+# 发布分支里不应再出现被排除的运行时文件
+echo "==> Verifying the release carries no excluded runtime files"
+FAILED=0
+for p in $LOCAL_EXCLUDE_PATHS; do
+  # 同时支持目录和文件：匹配该路径本身或其下的内容
+  if git ls-files | grep -qE "^${p}(/|$)"; then
+    echo "    ERROR: excluded runtime file is still tracked: $p"
+    git ls-files | grep -E "^${p}(/|$)" | head -5
+    FAILED=1
+  fi
+done
+if [ "$FAILED" = "1" ]; then
+  echo "    aborting push; restoring pydeps and runtime files first."
+  if [ -d /data/pydeps_pub_keep ]; then
+    mv /data/pydeps_pub_keep "$BUILD_DIR/pydeps"
+  fi
+  for p in $MOVED_LOCAL; do
+    if [ -e "$LOCAL_KEEP/$p" ]; then
+      mkdir -p "$(dirname "$BUILD_DIR/$p")"
+      mv "$LOCAL_KEEP/$p" "$BUILD_DIR/$p"
+    fi
+  done
+  exit 1
+fi
+echo "    ok: none tracked"
+
 # Capture the result instead of letting `set -e` abort here: the restore steps
 # below must always run, otherwise pydeps would stay in /data/pydeps_pub_keep
 # and the device would be broken.
@@ -127,6 +181,16 @@ if [ -d /data/pydeps_pub_keep ]; then
   mv /data/pydeps_pub_keep "$BUILD_DIR/pydeps"
   echo "    pydeps restored"
 fi
+
+echo "==> Restoring runtime files"
+for p in $MOVED_LOCAL; do
+  if [ -e "$LOCAL_KEEP/$p" ]; then
+    mkdir -p "$(dirname "$BUILD_DIR/$p")"
+    mv "$LOCAL_KEEP/$p" "$BUILD_DIR/$p"
+    echo "    $p restored"
+  fi
+done
+rm -rf "$LOCAL_KEEP" 2>/dev/null || true
 
 if [ "$PUSH_OK" != "1" ]; then
   echo ""
