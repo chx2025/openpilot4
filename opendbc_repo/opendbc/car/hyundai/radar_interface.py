@@ -332,7 +332,11 @@ class RadarInterface(RadarInterfaceBase):
     self.track_id = 0
 
     self.corner_objects_available = self.rcp_corner_objects is not None or self.rcp_corner_objects_180 is not None or self.rcp_corner_objects_430 is not None
-    self.radar_off_can = CP.radarUnavailable and not self.corner_objects_available
+    # ESCC 生效时不能用 radarUnavailable 把整个接口短路：radarUnavailable 只是
+    # 启动指纹里"有没有看到 0x500"的一次快照，会误判（雷达实际在发、只是指纹
+    # 窗口没抓到）。一旦短路，ESCC（0x2AB）解析器建了也永远不会被 update()，
+    # 一个点都出不来 -> 只剩视觉 lead（UI 蓝框）。
+    self.radar_off_can = CP.radarUnavailable and not self.corner_objects_available and not self.enhanced_scc
     print(
       "RadarInterface: "
       f"radarUnavailable={CP.radarUnavailable} radarTracks={self.radar_tracks} "
