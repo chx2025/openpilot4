@@ -164,6 +164,12 @@
             box-shadow: none;
         }
 
+        /* 数字输入框允许键盘直接输入，聚焦时给出可编辑提示 */
+        input[type="number"].param-input:focus {
+            border: 1px solid #4CAF50;
+            background: #2d2d2d;
+        }
+
         .param-input::-webkit-outer-spin-button,
         .param-input::-webkit-inner-spin-button {
             -webkit-appearance: none;
@@ -983,7 +989,8 @@
                     '<button type="button" class="number-btn" onclick="adjustNumber(\'' + key + '\', -' + config.step + ')">-</button>' +
                     '<input type="number" class="param-input" id="' + key + '" ' +
                            'value="' + value + '" min="' + config.inputRange[0] + '" ' +
-                           'max="' + config.inputRange[1] + '" step="' + config.step + '" readonly>' +
+                           'max="' + config.inputRange[1] + '" step="' + config.step + '" ' +
+                           'onfocus="this.select()">' +
                     '<button type="button" class="number-btn" onclick="adjustNumber(\'' + key + '\', ' + config.step + ')">+</button>' +
                 '</div>';
             } else {
@@ -995,6 +1002,11 @@
             var inputs = document.querySelectorAll('.param-input');
             for (var i = 0; i < inputs.length; i++) {
                 var input = inputs[i];
+
+                // 数字输入框允许直接键盘输入（含粘贴/拖入），仅把非 number 的输入框设为只读
+                if (input.type === 'number') {
+                    continue;
+                }
 
                 input.addEventListener('keydown', function(e) {
                     e.preventDefault();
@@ -1202,6 +1214,10 @@
                             value = parseInt(element.value, 10);
                         } else if (paramConfig[key].uiType === 'number') {
                             value = parseFloat(element.value);
+                            // 允许直接键盘输入后，用户可能清空字段，避免把 NaN 发给服务端
+                            if (isNaN(value)) {
+                                value = (NavParamsData[key] !== undefined) ? NavParamsData[key] : paramConfig[key].defaultValue;
+                            }
                         } else {
                             value = element.value;
                         }
