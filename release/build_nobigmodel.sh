@@ -22,7 +22,7 @@ cd $BUILD_DIR
 #      moved out of the tree, then restored locally after the push.
 #
 #   2. local backup dirs that would otherwise be swept in by `git add -f .`
-#      (see LOCAL_EXCLUDE_PATHS below, e.g. amapnavi_bak/)
+#      (see LOCAL_EXCLUDE_PATHS below, e.g. amapnavi/nav_params.json)
 #      Also moved out and restored afterwards.
 #
 # Why a release without the big model still runs:
@@ -48,10 +48,9 @@ cd $BUILD_DIR
 #
 # 注意：`git add -f .` 会无视所有 .gitignore（根目录和各模块的），所以仅仅写进
 # .gitignore 是无效的 —— 运行时写在源码目录里的文件必须靠"移出目录树"来排除。
-#   amapnavi_bak/                        本地备份目录
 #   amapnavi/nav_params.json             UnifiedParams(config.py) 运行时写入的参数文件
 #   xiaoge/v_asm_config.json             V-ASM 本地盲区多边形（网页编辑后生成）
-LOCAL_EXCLUDE_PATHS="amapnavi_bak openpilot/selfdrive/carrot/amapnavi/nav_params.json openpilot/selfdrive/carrot/xiaoge/v_asm_config.json"
+LOCAL_EXCLUDE_PATHS="openpilot/selfdrive/carrot/amapnavi/nav_params.json openpilot/selfdrive/carrot/xiaoge/v_asm_config.json"
 
 if [ -z "$SKIP_CONFIRM" ]; then
   echo "This will: back up + exclude eGPU big-model artifacts and local backup"
@@ -235,7 +234,7 @@ if git ls-files | grep -q 'modeld/models/\.big_model_build_stamp'; then
   FAILED=1
 fi
 for p in $LOCAL_EXCLUDE_PATHS; do
-  # 同时支持目录(amapnavi_bak/)和文件(…/nav_params.json)：匹配该路径本身或其下的内容。
+  # 同时支持目录(…/dir/)和文件(…/nav_params.json)：匹配该路径本身或其下的内容。
   # 原来只 grep "^$p/"（结尾带斜杠），文件路径永远匹配不到，等于没校验。
   if git ls-files | grep -qE "^${p}(/|$)"; then
     echo "    ERROR: excluded local path is still tracked: $p"
@@ -292,7 +291,7 @@ if [ "$PUSH_OK" != "1" ]; then
   echo ""
   echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   echo "!! PUSH FAILED - nothing was published to jihulab."
-  echo "!!   本地文件（大模型 / pydeps / amapnavi_bak）已恢复，可正常使用。"
+  echo "!!   本地文件（大模型 / pydeps / 运行时文件）已恢复，可正常使用。"
   echo "!!   常见原因：jihulab 未配置凭据。可先 git config credential.helper store"
   echo "!!   或设置 TOKEN=<token> 后重跑本脚本。"
   echo "!!   注意：本次已 rm -rf .git 并重建为 egpucp 分支，"
