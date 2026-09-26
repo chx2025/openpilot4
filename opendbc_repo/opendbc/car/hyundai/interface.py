@@ -214,6 +214,14 @@ class CarInterface(CarInterfaceBase):
     else:
       print(f"$$$OenpilotLongitudinalControl = {alpha_long}")
 
+    # carrot: ESCC 的用途就是给 OP 纵向提供原车雷达目标并保留原车 AEB，只有 OP 接管纵向时才有意义。
+    # 原车纵向（pcmCruise）时 ESCC 会让 carstate 跳过 SCC11/SCC12，巡航状态读不出来，
+    # UI 就会提示无法开启智能巡航，所以这里直接让 ESCC 不生效（等价于 EnableEscc=0）。
+    # 注意 EnableRadarTracks>=1 / CAMERA_SCC 会强制打开 OP 纵向，那种情况下 ESCC 依旧生效。
+    if ret.spFlags & HyundaiFlagsSP.SP_ENHANCED_SCC and not ret.openpilotLongitudinalControl:
+      ret.spFlags &= ~HyundaiFlagsSP.SP_ENHANCED_SCC.value
+      print("$$$ESCC disabled: openpilot longitudinal control is off")
+
     #ret.radarUnavailable = False  # TODO: canfd... carrot, hyundai cars have radar
 
     if Bus.radar not in DBC[ret.carFingerprint]:
