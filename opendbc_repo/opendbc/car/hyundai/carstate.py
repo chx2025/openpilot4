@@ -380,7 +380,9 @@ class CarState(CarStateBase):
           add_and_cache(self.cp, "CLU11", "clu11")
         elif self.controls_ready_count == 105:
           cp_cruise = self.cp_cam if self.CP.flags & HyundaiFlags.CAMERA_SCC else self.cp
-          scc_messages_expected = not self.CP.openpilotLongitudinalControl or self.CP.flags & HyundaiFlags.CAMERA_SCC
+          # ESCC：拦截器不转发 SCC 报文，订阅 SCC11/SCC12 会让 CANParser 永远超时
+          # -> carState.canValid=False -> UI 报「CAN Error: Check Connections!!」
+          scc_messages_expected = (not self.CP.openpilotLongitudinalControl or self.CP.flags & HyundaiFlags.CAMERA_SCC) and not (self.CP.spFlags & HyundaiFlagsSP.SP_ENHANCED_SCC)
           if scc_messages_expected:
             add_and_cache(cp_cruise, "SCC11", "scc11")
             add_and_cache(cp_cruise, "SCC12", "scc12")
@@ -491,7 +493,8 @@ class CarState(CarStateBase):
     ret.steerFaultTemporary = cp.vl["MDPS12"]["CF_Mdps_ToiUnavail"] != 0 or cp.vl["MDPS12"]["CF_Mdps_ToiFlt"] != 0
 
     # cruise state
-    if self.CP.openpilotLongitudinalControl:
+    # ESCC 车总线上没有 SCC11/SCC12，巡航状态改走 TCS13 + main_enabled，不要读 SCC
+    if self.CP.openpilotLongitudinalControl or (self.CP.spFlags & HyundaiFlagsSP.SP_ENHANCED_SCC):
       # These are not used for engage/disengage since openpilot keeps track of state using the buttons
       ret.cruiseState.available = self.main_enabled and self.controls_ready_count >= READY_COUNT_OK #cp.vl["TCS13"]["ACCEnable"] == 0
       ret.cruiseState.enabled = cp.vl["TCS13"]["ACC_REQ"] == 1
@@ -570,7 +573,8 @@ class CarState(CarStateBase):
 
       ret.gearShifter = self.gear_shifter
 
-    if not self.CP.flags & HyundaiFlags.CC_ONLY_CAR and (not self.CP.openpilotLongitudinalControl or self.CP.flags & HyundaiFlags.CAMERA_SCC):
+    # ESCC 车让下面的 elif（SP_ENHANCED_SCC）接管，AEB/FCW 从 ESCC 或 FCA11 取，不读 SCC12
+    if not self.CP.flags & HyundaiFlags.CC_ONLY_CAR and not (self.CP.spFlags & HyundaiFlagsSP.SP_ENHANCED_SCC) and (not self.CP.openpilotLongitudinalControl or self.CP.flags & HyundaiFlags.CAMERA_SCC):
       aeb_src = "FCA11" if self.CP.flags & HyundaiFlags.USE_FCA.value else "SCC12"
       aeb_sig = "FCA_CmdAct" if self.CP.flags & HyundaiFlags.USE_FCA.value else "AEB_CmdAct"
       aeb_warning = cp_cruise.vl[aeb_src]["CF_VSM_Warn"] != 0
