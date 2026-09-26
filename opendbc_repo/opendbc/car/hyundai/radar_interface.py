@@ -374,9 +374,12 @@ class RadarInterface(RadarInterfaceBase):
       # capnp 的 RadarSource 枚举只有 frontRadar/scc/corner235/corner180/corner430，
       # 没有 escc。写非法枚举名会让 capnp 抛 AttributeError，card 进程直接崩溃
       # （EnableEscc=1 + 车型识别成功 = 必崩，openpilot 完全不可用）。
-      # ESCC 点来自原车前向雷达 0x2AB，用枚举里的 frontRadar：
-      # 非角雷达来源、非 scc、trackId=1 不落在角雷达 ID 区间内。
-      self.pts[ESCC_TID].radarSource = "frontRadar"
+      # ESCC（0x2AB）是原车 SCC 雷达选出的唯一目标，语义上就是原车 SCC 目标，
+      # 所以按 scc 处理：这样它才能进入 EnableRadarTracks<=0 的 scc 选源范围
+      # （select_primary_radar_points 的候选 + allowed_output_sources 白名单）。
+      # 之前借 frontRadar 会让没有原始雷达点的车在默认档位被当成前雷达点排除，
+      # 候选集为空 -> 只剩视觉 lead -> UI 画蓝框。
+      self.pts[ESCC_TID].radarSource = "scc"
     if self.rcp_corner_objects is not None:
       for slot in range(CORNER_OBJECT_235_MSG_COUNT):
         t_id = CORNER_OBJECT_235_TRACK_ID_OFFSET + slot
