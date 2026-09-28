@@ -139,8 +139,11 @@ class UnifiedParams:
             "EnableCruiseStateShow": 1,
 
             # 盲区合并来源：选择哪些 amapnavi 盲区源并入 carState（位掩码之和）
-            #   1 摄像头 / 2 激光侧方 / 4 激光前角 / 8 激光后角 / 16 车身 / 32 车道实线 / 64 原车前雷达前侧
-            #   默认 95 = 除「车道实线」外全选（实线仍走 LaneLineCheck 判断，不无条件挡变道）
+            #   1 摄像头 / 2 激光侧方 / 4 激光前角 / 8 激光后角 / 16 车身 / 64 原车前雷达前侧
+            #   默认 95 = 上述全部
+            #   注：位 32(车道实线) 已废弃、不再参与合并 —— 实线由
+            #       xiaogeLeftLine/xiaogeRightLine 走 LaneLineCheck 判据，
+            #       不并入盲区(见 amap_navi.public_amap_navi 的说明)
             "XiaogeBlindSources": 95,
 
             "LidarBsdDelayTime": 10,

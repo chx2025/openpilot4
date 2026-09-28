@@ -835,7 +835,7 @@
             "XiaogeBlindSources": {
                 chineseName: "盲区合并来源",
                 defaultValue: 95,
-                description: "选择哪些外挂盲区源并入 carState（供变道判断）。可多选，保存值为各位之和，默认 95（除“车道实线”外全选）",
+                description: "选择哪些外挂盲区源并入 carState（供变道判断）。可多选，保存值为各位之和，默认 95（全选）",
                 uiType: "multiselect",
                 options: [
                     { value: 1,  text: "摄像头盲区" },
@@ -843,8 +843,7 @@
                     { value: 4,  text: "激光雷达-前角" },
                     { value: 8,  text: "激光雷达-后角" },
                     { value: 16, text: "车身盲区" },
-                    { value: 64, text: "原车前雷达前侧" },
-                    { value: 32, text: "车道实线(勾选后无条件挡变道)" }
+                    { value: 64, text: "原车前雷达前侧" }
                 ],
                 category: "盲区合并来源"
             },
