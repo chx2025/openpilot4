@@ -247,10 +247,19 @@ class DesireHelper:
       atc_enabled and
       self.atc_type in ("fork left", "fork right", "atc left", "atc right")
     )
+    # fork left(左岔道/左侧匝道出口) 不再强制人工：
+    #   旧白名单含 "fork left"，而 driver_enabled 只认车辆 CAN 的真实转向灯
+    #   (carState.leftBlinker/rightBlinker)。本车的外挂转向灯由控制板直接点亮灯泡、
+    #   不进 CAN，所以 App 主导的左岔道变道 driver_enabled 恒为 False →
+    #   atc_lane_change_manual_only 恒为 True → start_gate 内层只剩"方向盘扭矩"一条路，
+    #   表现为"命令已发、CP 一直停在 Prepare"(实车 2026-09-29 07:56 连续 8 轮超时)。
+    #   放开后左岔道走 auto_lane_change_trigger(auto)，
+    #   几何/线型/BSD 这些安全前提仍然照旧拦截(lane_change_available)。
+    #   "atc left"(路口左转弯) 风险更高，仍保留人工确认。
     atc_lane_change_manual_only = (
       atc_enabled and
       not driver_enabled and
-      self.atc_type in ("fork left", "atc left")
+      self.atc_type in ("atc left",)
     )
     atc_lane_change_only = atc_lane_change_requested and not driver_enabled
     # Do not treat a blocked->available retry as permission to cross solid/unknown lines.
