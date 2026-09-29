@@ -102,6 +102,18 @@
     padding: 7px 10px;
   }
   .toolbar label { color: var(--dim); font-size: 13px; align-self: center; }
+  a.back {
+    align-self: center;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card-hi);
+    color: var(--fg);
+    font-size: 13px;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  a.back:hover { background: #273040; border-color: #384555; }
 </style>
 </head>
 <body>
@@ -114,6 +126,9 @@
     <label for="sourceSelect">模型来源</label>
     <select id="sourceSelect" hidden></select>
     <button id="btnRefresh" class="mini">刷新</button>
+    <!-- 参数页由 amapnavi 的 8088 服务提供，本页在 carrot web(7000)：用绝对地址，
+         href 在脚本里按当前主机名拼接。 -->
+    <a class="back" id="navParamsLink" href="#" title="返回 AMAPNAVI 参数页">← 返回参数页</a>
   </div>
 </header>
 
@@ -428,6 +443,10 @@
   }
 
   $("btnRefresh").addEventListener("click", load);
+  // 参数页在 amapnavi 的 8088 端口，本页在 carrot web(7000)：跨端口的链接跳转不受
+  // 同源策略限制，主机名按当前访问地址拼，换设备无需改页面。
+  const navParamsLink = $("navParamsLink");
+  if (navParamsLink) navParamsLink.href = "http://" + location.hostname + ":8088/nav_params";
   load();
   setInterval(() => { load(); }, 20000);
   setInterval(refreshDownloadProgress, 2000);

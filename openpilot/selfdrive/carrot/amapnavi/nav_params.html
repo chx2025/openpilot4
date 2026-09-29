@@ -361,6 +361,22 @@
             margin-left: 0;
         }
 
+        .model-link {
+            display: inline-block;
+            margin-top: 4px;
+            padding: 6px 12px;
+            border: 1px solid #4CAF50;
+            border-radius: 5px;
+            color: #4CAF50;
+            text-decoration: none;
+            font-size: clamp(0.75rem, 3vw, 0.9rem);
+        }
+
+        .model-link:active,
+        .model-link:hover {
+            background: rgba(76, 175, 80, 0.15);
+        }
+
         .subgroup {
             margin-bottom: 15px;
             border-radius: 6px;
@@ -435,6 +451,9 @@
         <div class="header">
             <h1>⚙️ AMAPNAVI 参数设置</h1>
             <p>根据参数下面的说明设置适合的值</p>
+            <!-- 模型选择页由 carrot web 提供(端口 7000)，本页在 8088，因此用绝对地址；
+                 href 在脚本里按当前主机名拼接，避免换设备后还要改页面。 -->
+            <a class="model-link" id="egpu-model-link" href="#" target="_blank" rel="noopener">🧠 eGPU 大模型选择</a>
         </div>
 
         <div class="search-container">
@@ -1525,6 +1544,14 @@
             loadNavParams();
         }
 		document.getElementById('nav_params-ip').textContent = window.location.hostname;
+
+        // 模型选择页由 carrot web 提供(默认端口 7000)，与本页(8088)不同端口，
+        // 因此用绝对地址；链接跳转不受同源策略限制，页面内的 /api/egpu/* 调用在
+        // 7000 上仍是同源请求。主机名按当前访问地址拼，换设备无需改页面。
+        var egpuModelLink = document.getElementById('egpu-model-link');
+        if (egpuModelLink) {
+            egpuModelLink.href = 'http://' + window.location.hostname + ':7000/models.html';
+        }
     </script>
 </body>
 </html>
