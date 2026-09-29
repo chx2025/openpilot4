@@ -137,10 +137,13 @@ def build_models_payload() -> dict[str, Any]:
                          entry.get('url'), downloaded=bool(known.get('downloaded')),
                          selected=sha == selected, is_active=sha == running))
 
-  # Anything on disk that the server no longer lists still has to be switchable.
+  # Anything on disk that the server no longer lists still has to be switchable, and so
+  # do the built-in opt-in checkpoints (Cinque v3) that no catalog advertises yet - for
+  # those `downloaded` must come from the index instead of being assumed true.
   for sha, known in by_sha.items():
     models.append(_entry(None, known.get('model_id'), sha, known.get('size'), known.get('url'),
-                         downloaded=True, selected=sha == selected, is_active=sha == running))
+                         downloaded=bool(known.get('downloaded')), selected=sha == selected,
+                         is_active=sha == running))
 
   return {
     'ok': True,

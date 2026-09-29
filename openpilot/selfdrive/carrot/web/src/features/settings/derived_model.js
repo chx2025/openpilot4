@@ -79,13 +79,14 @@ export function createSettingsDerivedModel(options = {}) {
   }
 
   function getFavoriteEntries() {
-    return favorites.map(findItemByName).filter((entry) => entry && !entry.item?.detail_parent);
+    return favorites.map(findItemByName)
+      .filter((entry) => entry && !entry.item?.detail_parent && !entry.item?.search_only);
   }
 
   function getProfileEntries(profile) {
     return Object.keys(profile?.values || {})
       .map(findItemByName)
-      .filter(Boolean)
+      .filter((entry) => entry && !entry.item?.search_only)
       .sort((left, right) => {
         const leftGroup = groupIndex.get(left.group)?.index ?? 9999;
         const rightGroup = groupIndex.get(right.group)?.index ?? 9999;
@@ -157,7 +158,7 @@ export function createSettingsDerivedModel(options = {}) {
     const profile = getProfileByGroup(group);
     if (profile) return getProfileEntries(profile);
     return (itemsByGroup[group] || [])
-      .filter((item) => !item?.detail_parent)
+      .filter((item) => !item?.detail_parent && !item?.search_only)
       .map((item) => ({ group, item }));
   }
 
@@ -245,11 +246,13 @@ export function createSettingsDerivedModel(options = {}) {
     return { entries: matches.slice(0, 20).map(({ entry }) => entry), total: matches.length };
   }
 
-  function makeSearchEntry({ source, profile = null, group, item, sourceLabels }) {
+  function makeSearchEntry({ source, profile = null, group, item, parentItem = null, sourceLabels }) {
     const groupLabel = getGroupLabel(group);
     const contextGroupLabel = getItemContextLabel(group, item);
     const title = localizedSettingItemText(item, "title", "etitle", "", language);
     const descr = localizedSettingItemText(item, "descr", "edescr", "", language);
+    const parentTitle = parentItem ? localizedSettingItemText(parentItem, "title", "etitle", "", language) : "";
+    const parentDescr = parentItem ? localizedSettingItemText(parentItem, "descr", "edescr", "", language) : "";
     const isProfile = source === "profile" && profile?.id;
     const profileName = isProfile ? String(profile.name || "") : "";
     const sourceLabel = isProfile ? sourceLabels.profile : sourceLabels.carrot;
@@ -267,8 +270,19 @@ export function createSettingsDerivedModel(options = {}) {
       name: item.name,
       title,
       descr,
-      haystack: [sourceLabel, profileName, groupLabel, contextGroupLabel, item.name, title, descr]
+      // Search-only controls do not exist in their catalog group's ordinary
+      // row list. Search selection must render them through inline search.
+      searchOnly: item?.search_only === true,
+      // Empty for a top-level item; a detail child points at the parent whose
+      // detail screen must be open before the child row exists.
+      detailParent: parentItem ? String(parentItem.name || "") : "",
+      // NFC so a decomposed query (some IMEs, macOS) still matches; the shared
+      // filter normalizes its query the same way. A child also carries the
+      // parent's text so the feature name finds its nested controls.
+      haystack: [sourceLabel, profileName, groupLabel, contextGroupLabel, item.name, title, descr,
+        parentItem?.name, parentTitle, parentDescr]
         .join("\n")
+        .normalize("NFC")
         .toLowerCase(),
     };
   }
@@ -281,9 +295,28 @@ export function createSettingsDerivedModel(options = {}) {
     const entries = [];
     groups.forEach((groupMeta) => {
       const group = groupMeta.group;
-      (itemsByGroup[group] || []).forEach((item) => {
+      const items = itemsByGroup[group] || [];
+      const childrenByParent = new Map();
+      items.forEach((item) => {
+        const parent = String(item?.detail_parent || "");
+        if (!parent) return;
+        if (!childrenByParent.has(parent)) childrenByParent.set(parent, []);
+        childrenByParent.get(parent).push(item);
+      });
+      items.forEach((item) => {
         if (item?.detail_parent) return;
         entries.push(makeSearchEntry({ source: "carrot", group, item, sourceLabels: resolvedLabels }));
+        // A child control only renders inside its parent's detail screen;
+        // index it (with the parent's text) so a search can find and jump to it.
+        (childrenByParent.get(item.name) || []).forEach((child) => {
+          entries.push(makeSearchEntry({
+            source: "carrot",
+            group,
+            item: child,
+            parentItem: item,
+            sourceLabels: resolvedLabels,
+          }));
+        });
       });
     });
     profiles.forEach((profile) => {

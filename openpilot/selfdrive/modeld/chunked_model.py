@@ -588,6 +588,28 @@ def download_deferred(model=None) -> bool:
   return _background_downloader_running()
 
 
+def boot_hook(manifest=None, spinner=None, status_values: dict | None = None) -> bool:
+  """The single call manager/build.py makes: has this boot's delivery been decided?
+
+  Wraps auto_install/download_deferred so that the boot file keeps one line and all
+  of the chunked bookkeeping (status file, background-downloader handoff) stays here.
+  True means the boot is already handled: either the chunked set is installed, or the
+  background downloader is fetching it and this boot should stay short.
+  """
+  model = manifest or active_manifest()
+  if model is None:
+    return False
+  if (path := auto_install(model, spinner, status_values)) is not None:
+    print(f"Using chunked eGPU model without SCons compilation: {path}")
+    return True
+  if download_deferred(model):
+    print("Chunked eGPU model is downloading in the background; skipping the boot build")
+    write_big_model_status(model_cache_dir(), "checking",
+                           detail="downloading chunked model in background", **(status_values or {}))
+    return True
+  return False
+
+
 def remove_chunked_sha(model_sha256: str, directory: Path | None = None) -> list[str]:
   """Delete a chunked set by model sha (failed verification, or the web model manager)."""
   path = _pkl_path(model_sha256, directory)

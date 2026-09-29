@@ -120,6 +120,7 @@ def fetch_after_onnx(manifest, reporter) -> None:
       pass
 
   try:
+    from openpilot.selfdrive.modeld.firmware import ensure_firmware
     from openpilot.selfdrive.modeld.precompiled_model import ensure_precompiled
 
     def precompiled_progress(done, total) -> None:
@@ -129,6 +130,10 @@ def fetch_after_onnx(manifest, reporter) -> None:
       reporter.update("downloading", model_id=manifest.model_id, sha256=manifest.sha256,
                       downloaded_bytes=done, total_bytes=total, detail="pkl")
 
+    # Firmware is tiny and must be on disk before the first GPU init of the boot.
+    # Upstream's ensure_precompiled used to fetch it; this fork keeps the call in
+    # this fork-only module so precompiled_model.py stays upstream's file.
+    ensure_firmware(manifest)
     ensure_precompiled(manifest, progress=precompiled_progress)
     # The runtime is extracted by now; teach it where the firmware lives.
     patch_runtime_firmware_paths(manifest)

@@ -13,8 +13,7 @@ import time
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
-from openpilot.selfdrive.modeld.big_model import active_manifest, model_cache_dir
-from openpilot.selfdrive.modeld.firmware import ensure_firmware
+from openpilot.selfdrive.modeld.big_model import active_manifest, model_cache_dir, model_path
 
 PROTOCOL = 1
 MAX_CATALOG = 64 * 1024
@@ -27,9 +26,11 @@ def sha256(path: Path) -> str:
 
 
 def validate_catalog(value: dict, model_sha: str, catalog_url: str) -> dict:
-  if value.get('protocol') != PROTOCOL or value.get('onnx_sha256') != model_sha:
+  generic = value.get('format') == 'comma-generic-onnx'
+  identity = 'model_sha256' if generic else 'onnx_sha256'
+  if value.get('protocol') != PROTOCOL or value.get(identity) != model_sha:
     raise ValueError('precompiled model does not match the selected ONNX/protocol')
-  if value.get('format') != 'comma-run-model' or value.get('gpu_arch') != 'gfx1200':
+  if value.get('format') not in ('comma-run-model', 'comma-generic-onnx') or value.get('gpu_arch') != 'gfx1200':
     raise ValueError('unsupported precompiled model format/GPU')
   if value.get('frame_skip') != 4 or value.get('camera_resolutions') != [[1928, 1208], [1344, 760]]:
     raise ValueError('incompatible precompiled model inputs')
@@ -51,11 +52,17 @@ def validate_catalog(value: dict, model_sha: str, catalog_url: str) -> dict:
     if type(artifact.get('size')) is not int or not 0 < artifact['size'] <= limit:
       raise ValueError('invalid artifact size')
     artifact['url'] = urljoin(catalog_url, artifact['url'])
-    # http is allowed: self-hosted / LAN model servers often have no TLS, and integrity
-    # is already guaranteed by the mandatory sha256 check above (and in download()).
+    # fork: plain-http mirrors are allowed (integrity is the mandatory sha256 check
+    # above); upstream requires https here. See model_source.py for the divergence list.
     parsed = urlparse(artifact['url'])
     if parsed.scheme not in ('http', 'https') or parsed.netloc != urlparse(catalog_url).netloc:
       raise ValueError(f'artifact must be served from the model server origin: {parsed.netloc}')
+  if generic:
+    # fork: upstream's generic check, guarded so a catalog without a pickle block
+    # (chunked-only delivery) cannot raise KeyError instead of a clear ValueError.
+    generic_pickle = value.get('pickle')
+    if not isinstance(generic_pickle, dict) or generic_pickle.get('sha256') != model_sha:
+      raise ValueError('generic artifact must match the selected model hash')
   return value
 
 
@@ -119,7 +126,8 @@ def installed(model=None, cache_dir: Path | None = None) -> Path | None:
     runtime = root / ('runtime-' + value['runtime']['sha256'][:16])
     if value.get('runtime_directory') != runtime.name:
       return None
-    if not (runtime / 'model_runtime.py').is_file() or not (runtime / 'tinygrad' / '__init__.py').is_file():
+    entry = 'examples/openpilot/compile_warp.py' if value['format'] == 'comma-generic-onnx' else 'model_runtime.py'
+    if not (runtime / entry).is_file() or not (runtime / 'tinygrad' / '__init__.py').is_file():
       return None
     return root / 'model.pkl'
   except (OSError, ValueError, KeyError, TypeError):
@@ -130,9 +138,6 @@ def ensure_precompiled(model=None, cache_dir: Path | None = None, progress=None)
   model = model or active_manifest()
   if model is None:
     return None
-  # Firmware is tiny and required before the first GPU init. Fetch it before the
-  # early return below, so an already-installed model still gets its firmware.
-  ensure_firmware(model, download)
   root = (cache_dir or model_cache_dir()) / 'precompiled' / model.sha256
   existing = installed(model, cache_dir)
   if existing:
@@ -149,7 +154,15 @@ def ensure_precompiled(model=None, cache_dir: Path | None = None, progress=None)
   if (root / 'rejected').exists() and (root / 'rejected').read_text() == value['pickle']['sha256']:
     return None
   root.mkdir(parents=True, exist_ok=True)
-  download(value['pickle'], root / 'model.pkl', progress)
+  target = root / 'model.pkl'
+  if value['format'] == 'comma-generic-onnx' and not target.exists():
+    source = model_path(model, cache_dir or model_cache_dir())
+    if source.is_file() and source.stat().st_size == value['pickle']['size'] and sha256(source) == model.sha256:
+      try:
+        os.link(source, target)
+      except OSError:
+        shutil.copyfile(source, target)
+  download(value['pickle'], target, progress)
   download(value['runtime'], root / 'runtime.tar.gz')
   runtime = root / ('runtime-' + value['runtime']['sha256'][:16])
   if not runtime.exists():
@@ -174,12 +187,14 @@ def ensure_precompiled(model=None, cache_dir: Path | None = None, progress=None)
 
 
 def reject(path: Path) -> None:
+  (path.parent / 'boot_validation.json').unlink(missing_ok=True)
   value = json.loads((path.parent / 'installed.json').read_text())
   (path.parent / 'rejected').write_text(value['pickle']['sha256'])
 
 
 def record_failure(path: Path, error: BaseException | str, phase: str) -> bool:
   """Keep transient device failures retryable; persist why an artifact was rejected."""
+  (path.parent / 'boot_validation.json').unlink(missing_ok=True)
   from openpilot.selfdrive.modeld.helpers import usbgpu_pcie_not_ready
   detail = str(error)
   transient = (usbgpu_pcie_not_ready(error) or isinstance(error, (TimeoutError, BrokenPipeError)) or
