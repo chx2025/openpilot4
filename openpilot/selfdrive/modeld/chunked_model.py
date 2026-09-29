@@ -538,6 +538,12 @@ def auto_install(manifest=None, spinner=None, status_values: dict | None = None,
   if read_model_source() == 'precompiled':
     sync_precompiled_marker(model)
     return None
+  if model.precompiled_only:
+    # The precompiled artifact *is* the model (generic PKL: no ONNX to compile and no
+    # chunked set to install), so this hook has nothing to decide. Running the chunked
+    # path would only fail and then clear the rejection marker that keeps such a model
+    # from being retried on every boot.
+    return None
   if allow_download is None:
     allow_download = not _background_downloader_running()
   try:
@@ -603,9 +609,12 @@ def boot_hook(manifest=None, spinner=None, status_values: dict | None = None) ->
     print(f"Using chunked eGPU model without SCons compilation: {path}")
     return True
   if download_deferred(model):
-    print("Chunked eGPU model is downloading in the background; skipping the boot build")
+    # A precompiled-only model is fetched by the same background downloader (see
+    # fetch_after_onnx): name the delivery that is actually on its way.
+    delivery = "precompiled" if model.precompiled_only else "chunked"
+    print(f"{delivery.capitalize()} eGPU model is downloading in the background; skipping the boot build")
     write_big_model_status(model_cache_dir(), "checking",
-                           detail="downloading chunked model in background", **(status_values or {}))
+                           detail=f"downloading {delivery} model in background", **(status_values or {}))
     return True
   return False
 

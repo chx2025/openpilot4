@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -99,7 +100,7 @@ def _running_sha() -> str | None:
 
 
 def _entry(label: str | None, model_id: str | None, sha: str, size, url, *, downloaded: bool,
-           selected: bool, is_active: bool) -> dict[str, Any]:
+           selected: bool, is_active: bool, precompiled_only: bool = False) -> dict[str, Any]:
   return {
     'label': label or model_id or sha[:12],
     'model_id': model_id,
@@ -109,7 +110,37 @@ def _entry(label: str | None, model_id: str | None, sha: str, size, url, *, down
     'downloaded': downloaded,
     'selected': selected,
     'active': is_active,
+    # The page uses this to explain that the delivery setting cannot apply to such a model.
+    'precompiled_only': precompiled_only,
   }
+
+
+def _is_precompiled_only(filename) -> bool:
+  """True for models delivered as an already-compiled PKL (Cinque v3).
+
+  Mirrors BigModelManifest.precompiled_only: the file *is* the model, so there is no ONNX
+  to compile locally and no chunked set, and the precompiled artifact is the only delivery
+  that can produce it.
+  """
+  return isinstance(filename, str) and filename.endswith('.pkl')
+
+
+def _cached_model_files(root: Path, sha: str) -> list[Path]:
+  """Every delivery file this model may occupy in the cache dir.
+
+  The name follows the manifest (`<stem>-<sha16><suffix>`, the same rule as
+  BigModelManifest.cache_filename), which keeps the generic precompiled PKL deletable too:
+  the ONNX name was hardcoded here, so removing Cinque v3 left its 776 MB on disk and the
+  page kept reporting it as downloaded. The legacy ONNX name stays in the list for the
+  pinned model, which predates the manifest-derived one.
+  """
+  names = {f'big_driving_supercombo-{sha[:16]}.onnx'}
+  for meta in model_catalog.list_models():
+    filename = meta.get('filename')
+    if meta.get('sha256') == sha and isinstance(filename, str) and filename:
+      stem, suffix = os.path.splitext(filename)
+      names.add(f'{stem}-{sha[:16]}{suffix}')
+  return [root / name for name in sorted(names)]
 
 
 def build_models_payload() -> dict[str, Any]:
@@ -135,7 +166,9 @@ def build_models_payload() -> dict[str, Any]:
     # catalog, so its presence alone must not count as "downloaded".
     models.append(_entry(entry.get('label'), entry.get('model_id'), sha, entry.get('size'),
                          entry.get('url'), downloaded=bool(known.get('downloaded')),
-                         selected=sha == selected, is_active=sha == running))
+                         selected=sha == selected, is_active=sha == running,
+                         precompiled_only=_is_precompiled_only(entry.get('filename')
+                                                               or known.get('filename'))))
 
   # Anything on disk that the server no longer lists still has to be switchable, and so
   # do the built-in opt-in checkpoints (Cinque v3) that no catalog advertises yet - for
@@ -143,7 +176,8 @@ def build_models_payload() -> dict[str, Any]:
   for sha, known in by_sha.items():
     models.append(_entry(None, known.get('model_id'), sha, known.get('size'), known.get('url'),
                          downloaded=bool(known.get('downloaded')), selected=sha == selected,
-                         is_active=sha == running))
+                         is_active=sha == running,
+                         precompiled_only=_is_precompiled_only(known.get('filename'))))
 
   return {
     'ok': True,
@@ -228,7 +262,7 @@ async def api_remove(request: web.Request) -> web.Response:
 
   root = model_cache_dir()
   removed = []
-  for path in (root / f'big_driving_supercombo-{sha[:16]}.onnx',):
+  for path in _cached_model_files(root, sha):
     try:
       if path.is_file():
         path.unlink()

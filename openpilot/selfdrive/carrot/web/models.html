@@ -225,8 +225,21 @@
     if (model.active) add("当前使用中", "on");
     if (model.selected && !model.active) add("已选择 · 待重启", "sel");
     add(model.downloaded ? "已下载" : "未下载", model.downloaded ? "ok" : "miss");
+    if (model.precompiled_only) add("预编译 PKL", "sel");
     add(model.sha256.slice(0, 12) + "…");
     el.appendChild(badges);
+
+    // A precompiled-only model (Cinque v3) ships as an already-compiled PKL: there is no
+    // ONNX to compile on the device and no chunked set to split, so the delivery setting
+    // cannot apply to it. Say so instead of letting the picker look like it was ignored.
+    if (model.precompiled_only) {
+      const note = document.createElement("div");
+      note.className = state.source === "chunked" ? "banner warn" : "banner";
+      note.textContent = state.source === "chunked"
+        ? "该模型只能以预编译方式交付（没有 ONNX 可供本机编译/分片），「分片包」设置对它无效，仍会下载预编译包。"
+        : "该模型为预编译 PKL：下载后直接生效，不需要本机编译。";
+      el.appendChild(note);
+    }
 
     // Render the bar for the active model and for the selected one as well: while a
     // switch is downloading, that model is neither "downloaded" nor "active" yet, so

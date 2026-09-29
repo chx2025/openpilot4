@@ -69,6 +69,23 @@ def patch_runtime_firmware_paths(model=None, cache_dir=None) -> bool:
     return False
 
 
+def _precompiled_rejected(manifest) -> bool:
+  """Was this model's precompiled artifact rejected on this device?
+
+  precompiled_model.reject() writes the marker after a permanent boot-validation failure.
+  For a precompiled-only model (the generic PKL that Cinque v3 ships as) that is the only
+  possible writer: sync_precompiled_marker() only runs once a chunked set was installed,
+  and such a model can never have one. So for those models the marker always means "this
+  artifact does not run on this hardware", and clearing it would only retry a known-bad
+  runtime on every boot.
+  """
+  try:
+    from openpilot.selfdrive.modeld.big_model import model_cache_dir
+    return (Path(model_cache_dir()) / 'precompiled' / manifest.sha256 / 'rejected').is_file()
+  except Exception:
+    return False
+
+
 def fetch_after_onnx(manifest, reporter) -> None:
   """Download the big-model artifacts for `manifest`, reporting progress.
 
@@ -81,11 +98,17 @@ def fetch_after_onnx(manifest, reporter) -> None:
   source = "auto"
   fetched_chunked = False
   newly_installed = False
+  # A precompiled-only model *is* the model file: it ships no ONNX to compile locally and
+  # no chunked set to split, so the precompiled artifact is the only delivery that can ever
+  # produce it. A pinned "chunked" therefore cannot be honoured for it - honouring it would
+  # download the model and then leave it unusable - and the pin keeps deciding the delivery
+  # of every model that does have a chunked alternative.
+  only_precompiled = bool(getattr(manifest, 'precompiled_only', False))
   try:
     from openpilot.selfdrive.modeld import chunked_model
 
     source = chunked_model.read_model_source()
-    if source != "precompiled":
+    if source != "precompiled" and not only_precompiled:
       def chunked_progress(done, total) -> None:
         # detail="chunked model" maps to the same "PKL" label as the precompiled set.
         reporter.update("downloading", model_id=manifest.model_id, sha256=manifest.sha256,
@@ -110,9 +133,15 @@ def fetch_after_onnx(manifest, reporter) -> None:
     except Exception:
       pass  # purely cosmetic; never fail over a flag file
     return
-  if source == "chunked":
+  if source == "chunked" and not only_precompiled:
     return  # the user pinned this delivery; the boot build falls back to the local compile
-  if source == "auto":
+  if only_precompiled and _precompiled_rejected(manifest):
+    # Say why instead of leaving the HUD on "ready": there is nothing to fetch, and
+    # ensure_precompiled() would skip the download for the same reason.
+    reporter.update("error", model_id=manifest.model_id, sha256=manifest.sha256,
+                    detail="precompiled runtime was rejected on this device")
+    return
+  if source == "auto" or only_precompiled:
     # Chunked is unavailable: let the precompiled artifact count as installed again.
     try:
       chunked_model.clear_precompiled_marker(manifest)
