@@ -216,6 +216,14 @@ function agnos_init {
       fi
     fi
 
+    # The update UI imports openpilot.system.hardware, which pulls in pyserial
+    # through the tici LPA. Runtime dependency bootstrap only runs after this
+    # function, so install it from the offline wheels before the UI starts.
+    if ! ensure_python_package serial pyserial 1; then
+      show_agnos_update_failure "The updater UI dependency pyserial could not be installed. Check the network, then retry."
+      return 1
+    fi
+
     local AGNOS_UI_LOG="/data/agnos-updater-ui.log"
     local ui_result
     : > "$AGNOS_UI_LOG"

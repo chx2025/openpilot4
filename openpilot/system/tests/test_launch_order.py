@@ -123,6 +123,8 @@ def test_agnos_ui_failure_never_auto_installs_and_shows_recovery_status() -> Non
   assert "show_agnos_update_failure" in source
   assert "/data/agnos-updater-ui.log" in source
   assert "--timeout 15 --retries 2 jeepney" in agnos_init
+  assert "ensure_python_package serial pyserial 1" in agnos_init
+  assert agnos_init.index("ensure_python_package serial pyserial 1") < agnos_init.index("for attempt in 1 2 3")
   assert 'rm -f "$AGNOS_UPDATE_CONFIRMATION_FILE"' in agnos_init
   assert "if ! agnos_init; then" in source
   assert source.index("if ! agnos_init; then") < source.index('bash "$DIR/scripts/ensure_params_build.sh"')
