@@ -200,13 +200,7 @@ def check_usbgpu(devices_path: Path = USB_DEVICES_PATH, timeout: float = 15.0,
   python_paths = [os.path.join(BASEDIR, "tinygrad_repo"), BASEDIR]
   python_paths.extend(path for path in env.get("PYTHONPATH", "").split(os.pathsep) if path)
   env.update({"DEV": "USB+AMD:LLVM", "GMMU": "0", "PYTHONPATH": os.pathsep.join(dict.fromkeys(python_paths))})
-  # Import compile_modeld first: it installs the tinygrad patches the real compile needs
-  # (firmware search paths among them). Without them this board's AGNOS firmware blobs do
-  # not match tinygrad's pinned hashes, it falls back to downloading them from gitlab and
-  # gets a 403 - which this check then reports as "GPU incompatible" on a healthy GPU,
-  # permanently blocking the local-compile fallback.
-  code = ("import openpilot.selfdrive.modeld.compile_modeld;"
-          "from tinygrad import Tensor; x = Tensor.rand(1 << 20).realize(); [x.numpy() for _ in range(8)]")
+  code = "from tinygrad import Tensor; x = Tensor.rand(1 << 20).realize(); [x.numpy() for _ in range(8)]"
   for attempt in range(USBGPU_CHECK_ATTEMPTS):
     try:
       result = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,

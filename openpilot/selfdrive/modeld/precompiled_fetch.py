@@ -31,8 +31,11 @@ _FW_OLD = '''  def fetch_fw(path, name, sha256):
         return blob
     return _orig(path, name, sha256)'''
 
-_FW_NEW = '''  # Firmware search path: read-only system dir plus the persistent /data dir.
-  _FW_BASES = ("/lib/firmware", "/data/media/0/carrot/firmware")
+_FW_NEW = '''  # Firmware search path: read-only system dir, the persistent /data dir and the
+  # blobs shipped in-tree for this board.
+  from openpilot.common.basedir import BASEDIR
+  _FW_BASES = ("/lib/firmware", "/data/media/0/carrot/firmware",
+               str(pathlib.Path(BASEDIR) / 'system' / 'hardware' / 'chestnut' / 'firmware'))
   def fetch_fw(path, name, sha256):
     for base in _FW_BASES:
       p = pathlib.Path(base) / path / (name + ".zst")
@@ -42,9 +45,60 @@ _FW_NEW = '''  # Firmware search path: read-only system dir plus the persistent 
           return blob
     return _orig(path, name, sha256)'''
 
+# The generic (Cinque v3) runtime ships plain tinygrad instead of model_runtime.py, so
+# there is no `_orig` to replace: append a wrapper around the fetch_fw it defines. The
+# wrapper is appended at the end of helpers.py (after the definition) and marked, so a
+# second pass is a no-op. Everything is guarded: if the wrapper cannot import what it
+# needs it falls through to the original function, i.e. to upstream's behaviour.
+_FW_HELPERS_WRAPPER = '''
+
+# --- fork patch: AMD firmware search paths -------------------------------------
+# Appended by precompiled_fetch.patch_runtime_firmware_paths(). This runtime only looks
+# in /lib/firmware (the AGNOS image ships a different linux-firmware revision than the
+# one this runtime pins) and otherwise downloads from gitlab, which the device cannot
+# reach (403) - so the eGPU fails to initialise even though the model is valid. Look
+# where firmware.ensure_firmware() stores the verified blobs and, when present, at the
+# blobs shipped in-tree for this board.
+if not globals().get('_FORK_FW_WRAPPED'):
+  import hashlib as _FORK_HS
+  import pathlib as _FORK_PL
+  _FORK_FW_BASES = ['/lib/firmware', '/data/media/0/carrot/firmware']
+  try:
+    from openpilot.common.basedir import BASEDIR as _FORK_BASEDIR
+    _FORK_FW_BASES.append(str(_FORK_PL.Path(_FORK_BASEDIR) / 'system' / 'hardware' / 'chestnut' / 'firmware'))
+  except Exception:
+    pass
+  _FORK_FW_ORIG = fetch_fw
+
+  def fetch_fw(path, name, sha256):  # noqa: F811 - intentional wrapper around upstream's
+    for _base in _FORK_FW_BASES:
+      _p = _FORK_PL.Path(_base) / path / (name + '.zst')
+      if not _p.is_file():
+        continue
+      _blob = None
+      try:
+        import zstandard as _FORK_ZSTD
+        _blob = _FORK_ZSTD.ZstdDecompressor().stream_reader(_p.read_bytes()).read()
+      except Exception:
+        try:
+          from compression.zstd import decompress as _FORK_DZSTD
+          _blob = _FORK_DZSTD(_p.read_bytes())
+        except Exception:
+          continue
+      if _FORK_HS.sha256(_blob).hexdigest() == sha256:
+        return _blob
+    return _FORK_FW_ORIG(path, name, sha256)
+
+  _FORK_FW_WRAPPED = True
+'''
+
 
 def patch_runtime_firmware_paths(model=None, cache_dir=None) -> bool:
-  """Teach the extracted runtime to look for firmware under /data as well."""
+  """Teach the extracted runtime to look for firmware under /data as well.
+
+  Two layouts are handled: model_runtime.py (the run-model runtime, replaced in place)
+  and the generic runtime that ships plain tinygrad/ only (helpers.py, wrapped).
+  """
   try:
     from openpilot.selfdrive.modeld.big_model import active_manifest, model_cache_dir
 
@@ -53,18 +107,29 @@ def patch_runtime_firmware_paths(model=None, cache_dir=None) -> bool:
       return False
     root = (cache_dir or model_cache_dir()) / 'precompiled' / m.sha256
     info = json.loads((root / 'installed.json').read_text(encoding='utf-8'))
-    target = root / info['runtime_directory'] / 'model_runtime.py'
-    if not target.is_file():
-      return False
-    src = target.read_text(encoding='utf-8')
-    if '_FW_BASES' in src:
+    runtime = root / info['runtime_directory']
+
+    target = runtime / 'model_runtime.py'
+    if target.is_file():
+      src = target.read_text(encoding='utf-8')
+      if '_FW_BASES' in src:
+        return True
+      if _FW_OLD not in src:
+        from openpilot.common.swaglog import cloudlog
+        cloudlog.warning('firmware path patch: unexpected model_runtime.py, skipped')
+        return False
+      target.write_text(src.replace(_FW_OLD, _FW_NEW), encoding='utf-8')
       return True
-    if _FW_OLD not in src:
-      from openpilot.common.swaglog import cloudlog
-      cloudlog.warning('firmware path patch: unexpected model_runtime.py, skipped')
-      return False
-    target.write_text(src.replace(_FW_OLD, _FW_NEW), encoding='utf-8')
-    return True
+
+    helpers = runtime / 'tinygrad' / 'helpers.py'
+    if helpers.is_file():
+      src = helpers.read_text(encoding='utf-8')
+      if '_FORK_FW_WRAPPED' in src:
+        return True
+      helpers.write_text(src + _FW_HELPERS_WRAPPER, encoding='utf-8')
+      return True
+
+    return False
   except Exception:
     return False
 

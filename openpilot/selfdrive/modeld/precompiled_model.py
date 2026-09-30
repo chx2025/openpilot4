@@ -198,11 +198,7 @@ def record_failure(path: Path, error: BaseException | str, phase: str) -> bool:
   from openpilot.selfdrive.modeld.helpers import usbgpu_pcie_not_ready
   detail = str(error)
   transient = (usbgpu_pcie_not_ready(error) or isinstance(error, (TimeoutError, BrokenPipeError)) or
-               'precompiled eGPU worker timed out' in detail or 'precompiled eGPU worker exited' in detail or
-               # Losing the USB GPU lock race (modeld from a previous run, a compile, or a
-               # diagnostic tool holding it) is contention, not a broken artifact. Treating it
-               # as permanent blacklisted the artifact until someone noticed and cleared it.
-               'Failed to acquire lock file' in detail)
+               'precompiled eGPU worker timed out' in detail or 'precompiled eGPU worker exited' in detail)
   value = json.loads((path.parent / 'installed.json').read_text())
   failure = {'time': time.time(), 'phase': phase, 'rejected': not transient,  # noqa: TID251 - correlate persisted failures with boot logs
              'pickle_sha256': value['pickle']['sha256'], 'error': detail[-16384:]}

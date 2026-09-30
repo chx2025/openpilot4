@@ -1,0 +1,218 @@
+"""Fork-side runtime patches for the USB-eGPU stack.
+
+These patches used to live inside upstream files (modeld.py, usbgpu.py,
+compile_modeld.py, precompiled_model.py). They are collected here so those files stay
+upstream's, and so every process that needs them gets them from one place: the
+repo-root ``sitecustomize.py`` imports and applies this module at interpreter start
+(see that file for why the hook works for manager-spawned processes, the precompiled
+worker subprocess and the ``check_usbgpu`` probe alike).
+
+What is patched, and why the patches are needed at all:
+
+* ``AM_POWER_LIMIT``: the chestnut (ASM24) board defaults to the GPU's SMU PPT limit
+  (~182W). 120W lowers the peak current and cuts USB/PCIe link flapping under load,
+  which showed up as ``bulk IN`` I/O errors mid-inference. tinygrad's amdev reads it.
+* ``tinygrad.helpers.fetch_fw``: tinygrad only looks for AMD firmware in
+  ``/lib/firmware`` and otherwise downloads it from gitlab. That directory holds a
+  different linux-firmware build than the one tinygrad pins, the download is blocked
+  (HTTP 403), and the failed init then disables the eGPU. Also search the persistent
+  dir ``firmware.ensure_firmware()`` fills and the blobs shipped in-tree for this board.
+* ``precompiled_model.record_failure``: a dropped bulk transfer or a lost USB lock race
+  is a property of the link, not of the artifact. Judging those permanent blacklisted
+  healthy precompiled artifacts until someone deleted the marker by hand.
+
+Rules for anything added here:
+
+* never import the modules being patched at startup - use ``patch_after_import()``. A
+  process that never touches tinygrad must not pay for it, and modeld must keep setting
+  ``GMMU`` before its first tinygrad import;
+* one patch per concern, idempotent, and silent on failure: this module runs in every
+  python process on the device and must never be able to break one;
+* ``OPENPILOT_EGPU_PATCH=0`` disables everything.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.machinery
+import os
+import pathlib
+import sys
+from collections.abc import Callable
+
+ENABLED = os.environ.get("OPENPILOT_EGPU_PATCH", "1") != "0"
+
+AM_POWER_LIMIT = "120"
+
+# Firmware search order for fetch_fw: the read-only system dir AGNOS ships, then the
+# persistent dir the model server fills. The in-tree blobs (see firmware_bases()) are
+# appended when this checkout has them.
+FIRMWARE_BASES = (
+  "/lib/firmware",
+  "/data/media/0/carrot/firmware",
+)
+
+# USB transport failures that mean "the link hiccupped", not "the artifact is broken".
+TRANSIENT_ERROR_TEXT = (
+  "bulk IN ",
+  "bulk OUT ",
+  "Input/Output Error",
+  "libusb_",
+  "usb bridge reset",
+  "Failed to acquire lock file",
+)
+
+# Upstream's record_failure already treats this wording as transient; wrapping the
+# message keeps one definition of "transient" instead of a second, drifting copy.
+_TRANSIENT_WRAPPER_TEXT = "precompiled eGPU worker timed out"
+
+
+def firmware_bases() -> tuple[str, ...]:
+  """Search bases in order: system, persistent cache, then the in-tree blobs."""
+  bases = list(FIRMWARE_BASES)
+  try:
+    from openpilot.common.basedir import BASEDIR
+
+    in_tree = pathlib.Path(BASEDIR) / "system" / "hardware" / "chestnut" / "firmware"
+    if in_tree.is_dir():
+      bases.append(str(in_tree))
+  except Exception:
+    pass
+  return tuple(dict.fromkeys(bases))
+
+
+def _decompress(raw: bytes) -> bytes | None:
+  """Decompress a .zst firmware blob, or None when no decompressor is importable.
+
+  AGNOS's system python has no zstandard; the openpilot venv does, and Python 3.14
+  gained compression.zstd. Returning None keeps the caller on the upstream path.
+  """
+  try:
+    import zstandard  # type: ignore[import-untyped]
+
+    return zstandard.ZstdDecompressor().stream_reader(raw).read()
+  except Exception:
+    pass
+  try:
+    from compression.zstd import decompress  # type: ignore[import-not-found]
+
+    return decompress(raw)
+  except Exception:
+    return None
+
+
+def apply_env_defaults() -> bool:
+  """Set the values launch_env.sh used to export, for direct runs (the GPU probe)."""
+  changed = False
+  if AM_POWER_LIMIT and os.environ.get("AM_POWER_LIMIT") is None:
+    os.environ["AM_POWER_LIMIT"] = AM_POWER_LIMIT
+    changed = True
+  return changed
+
+
+def patch_fetch_fw(helpers) -> bool:
+  """Wrap tinygrad's fetch_fw so the local firmware dirs are searched first."""
+  if getattr(helpers, "_fork_fw_bases", None) is not None:
+    return False
+  original = helpers.fetch_fw
+  bases = firmware_bases()
+
+  def fetch_fw(path, name, sha256):
+    for base in bases:
+      candidate = pathlib.Path(base) / path / f"{name}.zst"
+      if not candidate.is_file():
+        continue
+      blob = _decompress(candidate.read_bytes())
+      if blob is not None and hashlib.sha256(blob).hexdigest() == sha256:
+        return blob
+    return original(path, name, sha256)
+
+  helpers.fetch_fw = fetch_fw
+  helpers._fork_fw_bases = bases
+  return True
+
+
+def patch_record_failure(precompiled_model) -> bool:
+  """Report USB link hiccups with the wording upstream already treats as transient."""
+  if getattr(precompiled_model, "_fork_transient_wrapper", False):
+    return False
+  original = precompiled_model.record_failure
+
+  def record_failure(path, error, phase):
+    detail = str(error)
+    if _TRANSIENT_WRAPPER_TEXT not in detail and any(text in detail for text in TRANSIENT_ERROR_TEXT):
+      # The original detail is still what gets persisted; only the classification is
+      # borrowed from the worker-timeout wording the upstream function understands.
+      error = TimeoutError(f"{_TRANSIENT_WRAPPER_TEXT}: {detail}")
+    return original(path, error, phase)
+
+  precompiled_model.record_failure = record_failure
+  precompiled_model._fork_transient_wrapper = True
+  return True
+
+
+def patch_after_import(module_name: str, callback: Callable[[object], bool]) -> bool:
+  """Call callback(module) as soon as module_name finishes importing.
+
+  Used instead of importing the target here: the call sites import tinygrad and
+  precompiled_model lazily, and importing them at interpreter start would be a
+  behaviour change (startup cost, GMMU ordering), not a patch.
+  """
+  if (module := sys.modules.get(module_name)) is not None:
+    try:
+      callback(module)
+    except Exception:
+      pass
+    return True
+
+  class _Finder:
+    def find_spec(self, fullname, path=None, target=None):
+      if fullname != module_name:
+        return None
+      sys.meta_path.remove(self)
+      try:
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path)
+      except Exception:
+        return None
+      if spec is None or spec.loader is None:
+        return None
+      execute = spec.loader.exec_module
+
+      def exec_module(module):
+        execute(module)
+        try:
+          callback(module)
+        except Exception:
+          pass
+
+      try:
+        spec.loader.exec_module = exec_module  # type: ignore[method-assign]
+      except Exception:
+        return None
+      return spec
+
+  sys.meta_path.insert(0, _Finder())
+  return True
+
+
+def apply() -> list[str]:
+  """Apply every patch, returns the names that changed something (for logging/tests)."""
+  if not ENABLED:
+    return []
+  applied: list[str] = []
+  try:
+    if apply_env_defaults():
+      applied.append("env:AM_POWER_LIMIT")
+  except Exception:
+    pass
+  try:
+    if patch_after_import("tinygrad.helpers", patch_fetch_fw):
+      applied.append("hook:tinygrad.helpers")
+  except Exception:
+    pass
+  try:
+    if patch_after_import("openpilot.selfdrive.modeld.precompiled_model", patch_record_failure):
+      applied.append("hook:precompiled_model")
+  except Exception:
+    pass
+  return applied
