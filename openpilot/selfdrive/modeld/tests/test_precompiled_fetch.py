@@ -56,7 +56,6 @@ def calls(monkeypatch, tmp_path):
   monkeypatch.setattr(firmware, "ensure_firmware", lambda *_a, **_k: None)
   monkeypatch.setattr(precompiled_model, "ensure_precompiled", count("precompiled"))
   monkeypatch.setattr(precompiled_fetch, "patch_runtime_firmware_paths", lambda *_a, **_k: None)
-  monkeypatch.setattr(precompiled_fetch, "patch_runtime_usb_link", lambda *_a, **_k: None)
   monkeypatch.setattr(precompiled_fetch, "REBOOT_FLAG", tmp_path / "reboot")
   monkeypatch.setattr(precompiled_fetch, "_precompiled_rejected", lambda _m: False)
   return recorded
@@ -140,61 +139,3 @@ def test_boot_hook_names_the_precompiled_delivery_for_a_pkl_model(monkeypatch, t
   assert chunked_model.boot_hook(manifest()) is True
   status = (tmp_path / "status.json").read_text(encoding="utf-8")
   assert "precompiled model in background" in status
-
-
-# The MMIO surface of the generic runtime, reduced to what the patch anchors on. A C3-only
-# reboot leaves the dock powered, the ring submits collide with these accesses and the host
-# never re-enumerates the GPU, so every access has to drain the ring first.
-USB_SOURCE = '''from tinygrad.runtime.support.hcq2 import HCQ_RUNTIME_DEV
-from tinygrad.device import Buffer, BufferSpec
-
-
-class USBMMIOInterface:
-  def __getitem__(self, index):
-    off, sz = self._off_from_index(index)
-    return off
-
-  def __setitem__(self, index, data):
-    off, _ = self._off_from_index(index)
-    return off
-'''
-
-
-def _runtime_dir(tmp_path: Path, source: str = USB_SOURCE) -> Path:
-  runtime = tmp_path / "runtime-0123456789abcdef"
-  (runtime / "tinygrad" / "runtime" / "support").mkdir(parents=True)
-  (runtime / "tinygrad" / "runtime" / "support" / "usb.py").write_text(source, encoding="utf-8")
-  return runtime
-
-
-def test_usb_link_patch_serialises_the_ring_around_mmio(tmp_path):
-  runtime = _runtime_dir(tmp_path)
-  usb = runtime / "tinygrad" / "runtime" / "support" / "usb.py"
-
-  assert precompiled_fetch.patch_runtime_usb_link(runtime_dir=runtime) is True
-
-  patched = usb.read_text(encoding="utf-8")
-  assert "from tinygrad.device import Buffer, BufferSpec, Device" in patched
-  assert patched.count("Device[HCQ_RUNTIME_DEV.value].synchronize()") == 2
-  # both directions of an MMIO access drain before they touch the bridge
-  assert patched.count("fork patch: one ring, one driver on the link") == 2
-
-  # the boot hook re-runs this on every boot: a second pass must not stack a second drain
-  assert precompiled_fetch.patch_runtime_usb_link(runtime_dir=runtime) is True
-  assert usb.read_text(encoding="utf-8") == patched
-
-
-def test_usb_link_patch_leaves_an_unexpected_runtime_alone(tmp_path):
-  unsupported = "# a runtime whose USB backend does not match\n"
-  runtime = _runtime_dir(tmp_path, unsupported)
-
-  assert precompiled_fetch.patch_runtime_usb_link(runtime_dir=runtime) is False
-  assert (runtime / "tinygrad" / "runtime" / "support" / "usb.py").read_text(encoding="utf-8") == unsupported
-
-
-def test_usb_link_patch_without_an_installed_runtime_is_a_no_op(tmp_path, monkeypatch):
-  import openpilot.selfdrive.modeld.big_model as big_model
-  monkeypatch.setattr(big_model, "model_cache_dir", lambda: tmp_path)
-  monkeypatch.setattr(big_model, "active_manifest", lambda: manifest())
-
-  assert precompiled_fetch.patch_runtime_usb_link() is False

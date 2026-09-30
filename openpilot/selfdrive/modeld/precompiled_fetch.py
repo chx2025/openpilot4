@@ -116,91 +116,22 @@ if not globals().get('_FORK_FW_WRAPPED'):
   _FORK_FW_WRAPPED = True
 '''
 
-# The generic (Cinque v3) runtime talks to the dock's bridge from two sides at once: the AMD
-# driver submits work asynchronously through tinygrad's HCQ ring, while tinygrad's own USB
-# backend issues synchronous control transfers for the very same MMIO window. The bridge keeps
-# its SuperSpeed link state across a C3-only reboot, so after one the first python-side access
-# lands on top of the previous host's still-live submits and the link wedges: the host never
-# re-enumerates the GPU, and the eGPU stays "not detected" until the dock is power-cycled.
-# Draining the ring before each MMIO access serialises the two users. Upstream never sees this
-# because upstream never keeps a powered dock attached across a reboot.
-# patch_runtime_usb_link() applies this to the extracted runtime on every boot; the same text is
-# baked into the model mirror's precompiled-runtime.tar.gz whenever that artifact is rebuilt (the
-# procedure is in docs/carrot_egpu_usb_c3_reboot.md), so keep the two in sync - the mirror's
-# precompiled.json carries the runtime sha256 and size of whatever is uploaded.
-_USB_LINK_MARKER = 'one ring, one driver on the link'
-_USB_LINK_DRAIN = f'    Device[HCQ_RUNTIME_DEV.value].synchronize()  # fork patch: {_USB_LINK_MARKER}\n'
-_USB_LINK_PATCHES = (
-  # The drain needs Device; the import list of this file is stable across runtime revisions.
-  ('from tinygrad.device import Buffer, BufferSpec\n',
-   'from tinygrad.device import Buffer, BufferSpec, Device\n'),
-  # Every register access of a USB-attached AMD slice goes through these two methods.
-  ('  def __getitem__(self, index):\n    off, sz = self._off_from_index(index)\n',
-   '  def __getitem__(self, index):\n' + _USB_LINK_DRAIN + '    off, sz = self._off_from_index(index)\n'),
-  ('  def __setitem__(self, index, data):\n    off, _ = self._off_from_index(index)\n',
-   '  def __setitem__(self, index, data):\n' + _USB_LINK_DRAIN + '    off, _ = self._off_from_index(index)\n'),
-)
 
+def patch_runtime_firmware_paths(model=None, cache_dir=None) -> bool:
+  """Teach the extracted runtime to look for firmware under /data as well.
 
-def _installed_runtime_dir(model=None, cache_dir=None) -> Path | None:
-  """The extracted runtime directory of the artifact installed for `model`, or None.
-
-  Same key the worker uses (precompiled_model.installed): the cache holds one directory
-  per artifact, so the runtime to patch is the one installed.json names.
+  Two layouts are handled: model_runtime.py (the run-model runtime, replaced in place)
+  and the generic runtime that ships plain tinygrad/ only (helpers.py, wrapped).
   """
   try:
     from openpilot.selfdrive.modeld.big_model import active_manifest, model_cache_dir
 
     m = model or active_manifest()
     if m is None:
-      return None
+      return False
     root = (cache_dir or model_cache_dir()) / 'precompiled' / m.sha256
     info = json.loads((root / 'installed.json').read_text(encoding='utf-8'))
-    return root / info['runtime_directory']
-  except Exception:
-    return None
-
-
-def patch_runtime_usb_link(model=None, cache_dir=None, runtime_dir: Path | None = None) -> bool:
-  """Serialise this runtime's own USB transfers against the AMD ring (see _USB_LINK_PATCHES).
-
-  Runs on every boot, so a device that already downloaded the artifact is fixed in place
-  instead of waiting for a new runtime from the mirror.
-  """
-  runtime = runtime_dir or _installed_runtime_dir(model, cache_dir)
-  if runtime is None:
-    return False
-  try:
-    target = runtime / 'tinygrad' / 'runtime' / 'support' / 'usb.py'
-    src = target.read_text(encoding='utf-8')
-    if _USB_LINK_MARKER in src:
-      return True
-    if not all(old in src for old, _new in _USB_LINK_PATCHES):
-      from openpilot.common.swaglog import cloudlog
-      cloudlog.warning('eGPU usb link patch: unexpected usb.py, skipped')
-      return False
-    for old, new in _USB_LINK_PATCHES:
-      src = src.replace(old, new, 1)
-    # Bytes, not text: write_text would translate newlines on a non-POSIX caller (the
-    # packaging tool), and the artifact must stay byte-identical to the patched runtime.
-    target.write_bytes(src.encode('utf-8'))
-    return True
-  except Exception:
-    return False
-
-
-def patch_runtime_firmware_paths(model=None, cache_dir=None, runtime_dir: Path | None = None) -> bool:
-  """Teach the extracted runtime to look for firmware under /data as well.
-
-  Two layouts are handled: model_runtime.py (the run-model runtime, replaced in place)
-  and the generic runtime that ships plain tinygrad/ only (helpers.py, wrapped).
-  `runtime_dir` is for offline callers (the packaging tool) that pass the directory
-  instead of a model whose cache holds it.
-  """
-  try:
-    runtime = runtime_dir or _installed_runtime_dir(model, cache_dir)
-    if runtime is None:
-      return False
+    runtime = root / info['runtime_directory']
 
     target = runtime / 'model_runtime.py'
     if target.is_file():
@@ -211,7 +142,7 @@ def patch_runtime_firmware_paths(model=None, cache_dir=None, runtime_dir: Path |
         from openpilot.common.swaglog import cloudlog
         cloudlog.warning('firmware path patch: unexpected model_runtime.py, skipped')
         return False
-      target.write_bytes(src.replace(_FW_OLD, _FW_NEW).encode('utf-8'))
+      target.write_text(src.replace(_FW_OLD, _FW_NEW), encoding='utf-8')
       return True
 
     helpers = runtime / 'tinygrad' / 'helpers.py'
@@ -219,7 +150,7 @@ def patch_runtime_firmware_paths(model=None, cache_dir=None, runtime_dir: Path |
       src = helpers.read_text(encoding='utf-8')
       if '_FORK_FW_WRAPPED' in src:
         return True
-      helpers.write_bytes((src + _FW_HELPERS_WRAPPER).encode('utf-8'))
+      helpers.write_text(src + _FW_HELPERS_WRAPPER, encoding='utf-8')
       return True
 
     return False
@@ -322,11 +253,8 @@ def fetch_after_onnx(manifest, reporter) -> None:
     # this fork-only module so precompiled_model.py stays upstream's file.
     ensure_firmware(manifest)
     ensure_precompiled(manifest, progress=precompiled_progress)
-    # The runtime is extracted by now: teach it where the firmware lives, and serialise its
-    # USB transfers against the ring (see the _USB_LINK_PATCHES block comment above). Both
-    # patches are idempotent, so they are re-applied on every boot.
+    # The runtime is extracted by now; teach it where the firmware lives.
     patch_runtime_firmware_paths(manifest)
-    patch_runtime_usb_link(manifest)
     try:
       REBOOT_FLAG.touch()
     except Exception:
