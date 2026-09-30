@@ -13,6 +13,7 @@ import subprocess
 import sys
 import types
 from hashlib import sha256
+from pathlib import Path
 
 import pytest
 
@@ -82,6 +83,49 @@ def test_usb_link_failures_stay_retryable(monkeypatch):
   assert egpu_patches.patch_record_failure(module) is False
 
 
+def test_a_pinned_precompiled_delivery_is_not_substituted(monkeypatch, tmp_path):
+  """Pinning the precompiled package must not resolve to the chunked set on disk.
+
+  Upstream's resolution is "precompiled first, chunked second", so a pin whose artifact was
+  missing (or rejected) used to be answered with the chunked artifact: the page said one
+  delivery while the car drove the other. This patch is what makes the answer reflect the pin.
+  """
+  from openpilot.selfdrive.modeld import chunked_model, helpers, precompiled_model
+
+  model = types.SimpleNamespace(sha256="a" * 64, precompiled_only=False)
+  monkeypatch.setattr(helpers, "active_manifest", lambda: model)
+  # Restore whatever the module held before this test, patch or not.
+  monkeypatch.setattr(helpers, "active_usbgpu_compiled_path", helpers.active_usbgpu_compiled_path)
+  monkeypatch.setattr(helpers, "usbgpu_compile_pending", helpers.usbgpu_compile_pending)
+  monkeypatch.delattr(helpers, "_fork_model_delivery", raising=False)
+  assert egpu_patches.patch_model_delivery(helpers) is True
+  assert egpu_patches.patch_model_delivery(helpers) is False  # idempotent
+
+  chunked_pkl = tmp_path / "big_driving_supercombo.pkl"
+  manifest_path = Path(helpers.get_manifest_path(chunked_pkl))
+  manifest_path.parent.mkdir(parents=True, exist_ok=True)
+  manifest_path.write_text("1")  # a usable chunked set is on disk
+  monkeypatch.setattr(helpers, "modeld_pkl_path", lambda **_kwargs: chunked_pkl)
+  monkeypatch.setattr(chunked_model, "read_model_source", lambda *_args, **_kwargs: "precompiled")
+  monkeypatch.setattr(precompiled_model, "installed", lambda *_args, **_kwargs: None)
+
+  # Pinned precompiled and not installed: reported as nothing to load, and as pending - not
+  # as the chunked artifact that happens to be installed.
+  assert helpers.active_usbgpu_compiled_path() is None
+  assert helpers.usbgpu_compile_pending()
+
+  precompiled_path = tmp_path / "precompiled" / "model.pkl"
+  monkeypatch.setattr(precompiled_model, "installed", lambda *_args, **_kwargs: precompiled_path)
+  assert helpers.active_usbgpu_compiled_path() == precompiled_path
+  assert not helpers.usbgpu_compile_pending()
+
+  # Every other pin keeps upstream's own logic, which chunked_model's `rejected` marker
+  # steers towards the chunked artifact.
+  monkeypatch.setattr(chunked_model, "read_model_source", lambda *_args, **_kwargs: "auto")
+  monkeypatch.setattr(precompiled_model, "installed", lambda *_args, **_kwargs: None)
+  assert helpers.active_usbgpu_compiled_path() == chunked_pkl
+
+
 def test_patch_after_import_runs_once_at_import(monkeypatch, tmp_path):
   (tmp_path / "stub_late_module.py").write_text("VALUE = 41\n")
   monkeypatch.syspath_prepend(str(tmp_path))
@@ -118,11 +162,13 @@ def test_sitecustomize_applies_the_patches_in_a_new_process():
 
 def test_patches_are_not_added_back_to_upstream_files():
   """These patches must live in egpu_patches.py only (see the module docstring)."""
-  modeld = (BASEDIR / "openpilot/selfdrive/modeld/modeld.py").read_text()
-  compile_modeld = (BASEDIR / "openpilot/selfdrive/modeld/compile_modeld.py").read_text()
-  precompiled_model = (BASEDIR / "openpilot/selfdrive/modeld/precompiled_model.py").read_text()
-  usbgpu = (BASEDIR / "openpilot/system/hardware/usbgpu.py").read_text()
-  launch_env = (BASEDIR / "launch_env.sh").read_text()
+  base = Path(BASEDIR)  # basedir.BASEDIR is a str
+  modeld = (base / "openpilot/selfdrive/modeld/modeld.py").read_text()
+  compile_modeld = (base / "openpilot/selfdrive/modeld/compile_modeld.py").read_text()
+  precompiled_model = (base / "openpilot/selfdrive/modeld/precompiled_model.py").read_text()
+  usbgpu = (base / "openpilot/system/hardware/usbgpu.py").read_text()
+  launch_env = (base / "launch_env.sh").read_text()
+  helpers = (base / "openpilot/selfdrive/modeld/helpers.py").read_text()
 
   assert "AM_POWER_LIMIT" not in modeld
   assert "AM_POWER_LIMIT" not in launch_env
@@ -130,3 +176,6 @@ def test_patches_are_not_added_back_to_upstream_files():
   assert "chestnut" not in compile_modeld
   assert "USB_TRANSIENT_TEXT" not in precompiled_model
   assert "import openpilot.selfdrive.modeld.compile_modeld" not in usbgpu
+  # The delivery pin is applied by patch_model_delivery; helpers.py stays upstream's, so a
+  # merge cannot conflict on that logic (chunked_model owns the pin, markers steer the rest).
+  assert "read_model_source" not in helpers

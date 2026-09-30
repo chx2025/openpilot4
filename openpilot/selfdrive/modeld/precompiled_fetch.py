@@ -230,7 +230,19 @@ def fetch_after_onnx(manifest, reporter) -> None:
     reporter.update("error", model_id=manifest.model_id, sha256=manifest.sha256,
                     detail="precompiled runtime was rejected on this device")
     return
-  if source == "auto" or only_precompiled:
+  if source == "precompiled":
+    # The user pinned this delivery: drop the marker that makes ensure_precompiled() skip the
+    # download. Without this the pin resolves to the chunked set that is already installed
+    # (rejected marker -> installed() == None -> the old precompiled-first resolution fell
+    # through), i.e. "I picked the precompiled package but the car still drives the chunked
+    # one". An explicit pin is also an explicit retry, so a rejection recorded for a previous
+    # artifact does not block the install - a permanent runtime failure is re-recorded by
+    # record_failure() during this boot, and the web UI shows it instead of hiding it.
+    try:
+      chunked_model.sync_precompiled_marker(manifest)
+    except Exception:
+      pass  # purely cosmetic; the download below is what matters
+  elif source == "auto" or only_precompiled:
     # Chunked is unavailable: let the precompiled artifact count as installed again.
     try:
       chunked_model.clear_precompiled_marker(manifest)

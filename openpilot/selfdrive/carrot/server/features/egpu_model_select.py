@@ -9,6 +9,12 @@ Routes:
   POST /api/egpu/models/select   choose a model; optional reboot to activate
   POST /api/egpu/models/remove   delete a downloaded model from disk
   POST /api/egpu/models/source   pick the big model delivery (auto/precompiled/chunked)
+  POST /api/egpu/models/precompiled/retry  clear a rejected precompiled artifact marker
+
+The payload also carries `source_state`: why the pinned delivery is (or is not) the one in
+use, plus whether the precompiled artifact can be retried. The page shows it verbatim - a pin
+that cannot be honoured (artifact missing, or rejected by a previous boot) must never look
+like the setting was ignored.
 """
 from __future__ import annotations
 
@@ -24,7 +30,8 @@ from urllib.request import Request, urlopen
 
 from aiohttp import web
 
-from openpilot.selfdrive.modeld import chunked_model, model_catalog
+from openpilot.common.file_chunker import get_manifest_path
+from openpilot.selfdrive.modeld import chunked_model, helpers, model_catalog
 from openpilot.selfdrive.modeld.big_model import active_manifest, model_cache_dir
 from openpilot.selfdrive.modeld.model_source import MODEL_BASE, label_for, picker_rank
 
@@ -99,6 +106,66 @@ def _running_sha() -> str | None:
     return None
 
 
+def _chunked_ready(sha: str, precompiled_only: bool) -> bool:
+  """A chunked set for `sha` is installed, so nothing is left to compile on the device."""
+  if precompiled_only:
+    return False  # a generic PKL ships no ONNX to compile and no chunked set to split
+  try:
+    path = helpers.modeld_pkl_path(usbgpu=True, model_sha256=sha)
+    return Path(get_manifest_path(path)).is_file()
+  except Exception:
+    return False
+
+
+def _precompiled_state(sha: str) -> dict[str, Any]:
+  """On-disk state of the precompiled artifact for `sha` (installed / rejected / last failure)."""
+  root = model_cache_dir() / 'precompiled' / sha
+  state: dict[str, Any] = {
+    'installed': (root / 'installed.json').is_file() and (root / 'model.pkl').is_file(),
+    'rejected': (root / 'rejected').is_file(),
+  }
+  if state['rejected']:
+    try:
+      state['rejected_at'] = int((root / 'rejected').stat().st_mtime)
+    except OSError:
+      pass
+  failure = root / 'last_failure.json'
+  if failure.is_file():
+    try:
+      value = json.loads(failure.read_text(encoding='utf-8'))
+      state['last_failure'] = {'phase': value.get('phase'), 'time': value.get('time'),
+                               'permanent': bool(value.get('rejected')),
+                               'error': str(value.get('error', ''))[:300]}
+    except (OSError, ValueError):
+      pass
+  return state
+
+
+def _delivery_state(sha: str, precompiled_only: bool) -> dict[str, Any]:
+  return {'chunked_ready': _chunked_ready(sha, precompiled_only), 'precompiled': _precompiled_state(sha)}
+
+
+def _source_state(source: str, delivery: str | None, active_sha: str | None) -> dict[str, Any]:
+  """Why `delivery` is (not) the pinned `source`, in words the page shows verbatim."""
+  if active_sha is None:
+    return {'note': '', 'retry_available': False}
+  info = _precompiled_state(active_sha)
+  retry = bool(info.get('rejected')) or (source == 'precompiled' and not info.get('installed'))
+  if source == 'precompiled' and delivery != 'precompiled':
+    if info.get('rejected'):
+      note = '预编译包已被本机拒绝，「清除拒绝并重试」后重启可重新安装'
+    elif not info.get('installed'):
+      note = '预编译包尚未安装，重启后会自动下载'
+    else:
+      note = '预编译包已就绪，重启后生效'
+    return {'note': note, 'retry_available': retry}
+  if source == 'chunked' and delivery == 'precompiled':
+    return {'note': '该型号没有分片包，只能按预编译包运行', 'retry_available': False}
+  if source == 'chunked' and delivery is None:
+    return {'note': '分片包尚未准备好，当前走本机编译', 'retry_available': False}
+  return {'note': '', 'retry_available': retry}
+
+
 def _entry(label: str | None, model_id: str | None, sha: str, size, url, *, downloaded: bool,
            selected: bool, is_active: bool, precompiled_only: bool = False) -> dict[str, Any]:
   return {
@@ -112,6 +179,8 @@ def _entry(label: str | None, model_id: str | None, sha: str, size, url, *, down
     'active': is_active,
     # The page uses this to explain that the delivery setting cannot apply to such a model.
     'precompiled_only': precompiled_only,
+    # What each delivery can offer for this model right now (installed / rejected / missing).
+    'delivery_state': _delivery_state(sha, precompiled_only),
   }
 
 
@@ -187,14 +256,18 @@ def build_models_payload() -> dict[str, Any]:
   # so the server catalog's order is kept for everything else.
   models.sort(key=lambda model: picker_rank(model.get('sha256')))
 
+  source = chunked_model.read_model_source()
+  delivery = chunked_model.active_delivery()
   return {
     'ok': True,
     'selected': selected,
     'active': active,
     'running': running,
-    'source': chunked_model.read_model_source(),
+    'source': source,
     'sources': list(chunked_model.SOURCES),
-    'delivery': chunked_model.active_delivery(),
+    'delivery': delivery,
+    # Why the pinned delivery is not the one in use, so the page can say it out loud.
+    'source_state': _source_state(source, delivery, active),
     'remote_catalog': remote is not None,
     'models': models,
   }
@@ -315,8 +388,37 @@ async def api_source(request: web.Request) -> web.Response:
   return web.json_response({'ok': True, 'source': source})
 
 
+async def api_precompiled_retry(request: web.Request) -> web.Response:
+  """Clear the marker that stops a rejected precompiled artifact from ever being retried.
+
+  precompiled_model.reject() latches a permanent boot-validation failure into
+  precompiled/<sha>/rejected, and ensure_precompiled() then skips that artifact for as long as
+  the marker matches the served pickle. Clearing it is the only way back to the precompiled
+  delivery for that model. It takes effect on the next boot (modeld resolves the artifact once,
+  at startup), so this never reboots on its own - the page asks the user to restart.
+  """
+  try:
+    body = await request.json()
+  except Exception:
+    body = {}
+  sha = (body or {}).get('sha256') if isinstance(body, dict) else None
+  if not isinstance(sha, str) or len(sha) != 64:
+    sha = _active_sha()
+  if not isinstance(sha, str):
+    return web.json_response({'ok': False, 'error': 'no model selected'}, status=409)
+
+  marker = model_cache_dir() / 'precompiled' / sha / 'rejected'
+  try:
+    cleared = marker.is_file()
+    marker.unlink(missing_ok=True)
+  except OSError as exc:
+    return web.json_response({'ok': False, 'error': str(exc)}, status=500)
+  return web.json_response({'ok': True, 'sha256': sha, 'cleared': cleared, 'reboot_required': True})
+
+
 def register(app: web.Application) -> None:
   app.router.add_get('/api/egpu/models', api_models)
   app.router.add_post('/api/egpu/models/select', api_select)
   app.router.add_post('/api/egpu/models/remove', api_remove)
   app.router.add_post('/api/egpu/models/source', api_source)
+  app.router.add_post('/api/egpu/models/precompiled/retry', api_precompiled_retry)

@@ -1,8 +1,8 @@
 """Fork-side runtime patches for the USB-eGPU stack.
 
 These patches used to live inside upstream files (modeld.py, usbgpu.py,
-compile_modeld.py, precompiled_model.py). They are collected here so those files stay
-upstream's, and so every process that needs them gets them from one place: the
+compile_modeld.py, precompiled_model.py, helpers.py). They are collected here so those
+files stay upstream's, and so every process that needs them gets them from one place: the
 repo-root ``sitecustomize.py`` imports and applies this module at interpreter start
 (see that file for why the hook works for manager-spawned processes, the precompiled
 worker subprocess and the ``check_usbgpu`` probe alike).
@@ -20,6 +20,11 @@ What is patched, and why the patches are needed at all:
 * ``precompiled_model.record_failure``: a dropped bulk transfer or a lost USB lock race
   is a property of the link, not of the artifact. Judging those permanent blacklisted
   healthy precompiled artifacts until someone deleted the marker by hand.
+* ``helpers.active_usbgpu_compiled_path`` / ``usbgpu_compile_pending``: upstream resolves
+  "precompiled first, chunked second", so pinning the precompiled package in the web UI
+  silently resolved to the chunked artifact whenever the precompiled one was missing or
+  rejected - the page said one delivery while the car drove the other. Under that pin the
+  two functions answer for the precompiled artifact only (see patch_model_delivery).
 
 Rules for anything added here:
 
@@ -176,6 +181,57 @@ def patch_record_failure(precompiled_model) -> bool:
   return True
 
 
+def patch_model_delivery(helpers) -> bool:
+  """Make upstream's artifact resolution honour a pinned precompiled delivery.
+
+  helpers.py is upstream's file, so the pin is applied here instead of in it. The chunked
+  side needs no patch: chunked_model owns the pin and its `rejected` marker already makes
+  `precompiled_model.installed()` return None, which is what steers upstream's
+  "precompiled first, chunked second" resolution towards the chunked artifact.
+
+  What the marker cannot express is the opposite direction: with no marker and no
+  precompiled artifact, upstream falls through to the chunked artifact that is on disk, so
+  a pinned precompiled package was substituted silently. Under that pin the two functions
+  below answer for the precompiled artifact only - None and "pending" while it is absent -
+  which is what lets the web UI and the HUD explain the mismatch instead of hiding it.
+  Every other pin keeps upstream's logic untouched.
+  """
+  if getattr(helpers, "_fork_model_delivery", False):
+    return False
+  original_active = helpers.active_usbgpu_compiled_path
+  original_pending = helpers.usbgpu_compile_pending
+
+  def pinned_precompiled():
+    """(model, installed artifact) while the precompiled delivery is pinned, else (None, None)."""
+    try:
+      from openpilot.selfdrive.modeld.chunked_model import read_model_source
+      if read_model_source() != "precompiled":
+        return None, None
+      from openpilot.selfdrive.modeld.precompiled_model import installed
+    except Exception:
+      return None, None
+    model = helpers.active_manifest()
+    if model is None:
+      return None, None
+    try:
+      return model, installed(model)
+    except Exception:
+      return None, None
+
+  def active_usbgpu_compiled_path():
+    model, precompiled = pinned_precompiled()
+    return precompiled if model is not None else original_active()
+
+  def usbgpu_compile_pending():
+    model, precompiled = pinned_precompiled()
+    return precompiled is None if model is not None else original_pending()
+
+  helpers.active_usbgpu_compiled_path = active_usbgpu_compiled_path
+  helpers.usbgpu_compile_pending = usbgpu_compile_pending
+  helpers._fork_model_delivery = True
+  return True
+
+
 def patch_after_import(module_name: str, callback: Callable[[object], bool]) -> bool:
   """Call callback(module) as soon as module_name finishes importing.
 
@@ -238,6 +294,11 @@ def apply() -> list[str]:
   try:
     if patch_after_import("openpilot.selfdrive.modeld.precompiled_model", patch_record_failure):
       applied.append("hook:precompiled_model")
+  except Exception:
+    pass
+  try:
+    if patch_after_import("openpilot.selfdrive.modeld.helpers", patch_model_delivery):
+      applied.append("hook:helpers")
   except Exception:
     pass
   return applied

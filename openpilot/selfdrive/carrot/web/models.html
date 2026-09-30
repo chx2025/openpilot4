@@ -122,9 +122,11 @@
   <h1>eGPU 大模型管理</h1>
   <span class="sub" id="summary"></span>
   <span class="sub" id="delivery"></span>
+  <span class="sub" id="sourceState"></span>
   <div class="toolbar">
     <label for="sourceSelect">模型来源</label>
     <select id="sourceSelect" hidden></select>
+    <button id="btnRetryPrecompiled" class="mini" hidden>清除拒绝并重试</button>
     <button id="btnRefresh" class="mini">刷新</button>
     <!-- 参数页由 amapnavi 的 8088 服务提供，本页在 carrot web(7000)：用绝对地址，
          href 在脚本里按当前主机名拼接。 -->
@@ -152,7 +154,7 @@
   "use strict";
   const $ = (id) => document.getElementById(id);
 
-  const state = { models: [], selected: null, active: null, busy: false, remote: false, source: null, sources: [], delivery: null };
+  const state = { models: [], selected: null, active: null, busy: false, remote: false, source: null, sources: [], delivery: null, sourceState: null };
 
   function fmtBytes(v) {
     const n = Number(v) || 0;
@@ -352,14 +354,49 @@
     }
   }
 
-  // Which delivery the active model actually resolved to (chunked vs precompiled).
+  // Which delivery the active model actually resolved to (chunked vs precompiled), and - when
+  // the server says the pin cannot be honoured (artifact missing, or rejected by an earlier
+  // boot) - why, instead of leaving the picker looking like it was ignored.
   function updateDelivery() {
     const el = $("delivery");
-    if (!el) return;
     const names = { chunked: "分片包", precompiled: "预编译包" };
-    el.textContent = state.delivery
-      ? "当前实际使用：" + (names[state.delivery] || state.delivery)
-      : "";
+    if (el) {
+      el.textContent = state.delivery
+        ? "当前实际使用：" + (names[state.delivery] || state.delivery)
+        : "";
+    }
+
+    const info = state.sourceState || {};
+    const note = $("sourceState");
+    if (note) {
+      note.textContent = info.note ? "注意：" + info.note : "";
+    }
+
+    const retry = $("btnRetryPrecompiled");
+    if (retry) {
+      retry.hidden = !info.retry_available;
+      if (!retry.dataset.wired) {
+        retry.dataset.wired = "1";
+        retry.addEventListener("click", retryPrecompiled);
+      }
+    }
+  }
+
+  // Clear the marker that latched a rejected precompiled artifact: the next boot installs it
+  // again instead of silently keeping the chunked set.
+  async function retryPrecompiled() {
+    if (state.busy) return;
+    state.busy = true;
+    try {
+      const data = await postJson("/api/egpu/models/precompiled/retry", {});
+      banner((data && data.cleared ? "已清除拒绝标记" : "本来没有拒绝标记")
+             + "，重启设备后会重新安装预编译包。", "warn");
+      await load();
+    } catch (err) {
+      banner("重试失败：" + err.message, "err");
+    } finally {
+      state.busy = false;
+    }
   }
 
   const SOURCE_LABELS = { auto: "自动（分片优先）", chunked: "分片包", precompiled: "预编译包" };
@@ -414,6 +451,7 @@
     state.source = data.source || null;
     state.sources = data.sources || [];
     state.delivery = data.delivery || null;
+    state.sourceState = data.source_state || null;
     renderSource();
     updateDelivery();
 
