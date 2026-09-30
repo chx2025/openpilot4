@@ -7,9 +7,11 @@ The blobs are looked up by the compiled runtime's fetch_fw patch under
 /data/media/0/carrot/firmware (see model_runtime.py). Without them the eGPU never
 initializes, even when the model itself is valid.
 
-They also ship in-tree (system/hardware/chestnut/firmware/amdgpu): that copy is preferred
-and staged into the shared firmware dir, so a device initialises the eGPU with no network
-at all. Only their absence falls back to downloading from the model server.
+Part of that set also ships in-tree (system/hardware/chestnut/firmware/amdgpu). A blob the
+server does not serve is staged from the checkout when it matches the requested hash, so a
+mirror publishing an incomplete set cannot leave the eGPU unable to initialise. Existing
+files are never rewritten: the two runtimes on this board pin different builds of the same
+names and share this directory.
 """
 from __future__ import annotations
 
@@ -31,14 +33,15 @@ FIRMWARE_DIR = Path('/data/media/0/carrot/firmware/amdgpu')
 _FIRMWARE_MANIFEST = 'manifest.json'
 
 # name -> (sha256 of the .zst exactly as served, size in bytes)
-# Last-resort list for the current GPU (gfx1200): the in-tree manifest is preferred when
-# this checkout ships it (see _in_tree_firmware), because only those hashes are the ones
-# the runtime actually pins and asks for.
+# The blobs the runtimes on this board ask for. The first four are the build the precompiled
+# (pkl) runtime pins and the model server serves; the last four are identical in both the
+# runtime's build and the one shipped in-tree, so either copy satisfies them. Anything the
+# server publishes overrides these per name (see _remote_firmware).
 FIRMWARE: dict[str, tuple[str, int]] = {
-  'smu_14_0_2.bin.zst':    ('31158ca48f44fb226c855afd066732afd179f3871a9a1689c4410bc206bee293', 137070),
-  'gc_12_0_0_me.bin.zst':  ('ba1a2a3f0c557209703ca94ef20cadcec138b67a2c6f1d4ad1fdfc8fca12128d', 52076),
-  'gc_12_0_0_mec.bin.zst': ('dc74fcf8409bd735d9dbf5922884dc70f9c2c75948821391707b7fdb3475df38', 84163),
-  'gc_12_0_0_pfp.bin.zst': ('f8c98eea560615cf7a43fe29d16cc1bbac7976d278bbde897ed2daa45f48eb40', 41513),
+  'smu_14_0_2.bin.zst':    ('4c80055939f89ce619a8aaf71882fa04d426279191f893ff32acf02dc4861476', 137291),
+  'gc_12_0_0_me.bin.zst':  ('ef7fbca61215ae42dbb96048467793e7f7a06de139e4df7121be11d70750ebd6', 47877),
+  'gc_12_0_0_mec.bin.zst': ('b0d5ac1728f43873f03d94f27c8e9807e42e42653fb76054577dbd08befeb43e', 82417),
+  'gc_12_0_0_pfp.bin.zst': ('aae909f6c0481b2761a4193f1ed26e793676f83abb8db16e966402ecf120b8c4', 41901),
   'gc_12_0_0_rlc.bin.zst': ('01806109f63d4fe294b4bd108a34a0439c9a9568d45f71a039ef476ff9cb3010', 48374),
   'gc_12_0_0_imu.bin.zst': ('aaabca90b09db1b3f90f9ca717be19af0bd2f3295cfe6c227bf835c5428c3fb4', 21297),
   'psp_14_0_2_sos.bin.zst': ('42646102d34b9005e705831027ddf27ec952d5542dedd652ad82338f3b8e8ff9', 184938),
@@ -95,7 +98,7 @@ def _remote_firmware(model) -> dict[str, tuple[str, int]] | None:
   """Firmware list published by the server next to the blobs, if any.
 
   Lets a model built for a different GPU arch ship its own firmware without a
-  code change here. Any problem simply falls back to the in-tree manifest.
+  code change here. Any problem simply falls back to the built-in list.
   """
   url = urljoin(model.url, _FIRMWARE_PREFIX + _FIRMWARE_MANIFEST)
   try:
@@ -108,24 +111,24 @@ def _remote_firmware(model) -> dict[str, tuple[str, int]] | None:
   return _parse_manifest(raw)
 
 
-def _in_tree_firmware() -> dict[str, tuple[str, int]] | None:
-  """Manifest of the blobs shipped with this checkout, or None when absent.
+def _stage_in_tree(directory: Path, name: str, target: Path, want_hash: str) -> bool:
+  """Place a blob shipped with the checkout in the missing slot `target`.
 
-  This is the set the runtime pins for this board: when it is missing the device has to
-  download from the model server, and an unreachable mirror leaves the eGPU unable to
-  initialise at all, so say so instead of failing silently.
+  The blob the runtimes ask for is verified against the requested hash, so a checkout that
+  carries a different build of the same file is simply skipped instead of poisoning the
+  shared firmware directory. Only ever called for a file that is not there yet.
   """
-  directory = in_tree_firmware_dir()
-  if directory is None:
-    cloudlog.warning('in-tree eGPU firmware not found (looked in '
-                     + ', '.join(str(path) for path in _in_tree_candidates()) + ')')
-    return None
+  source = directory / 'amdgpu' / name
   try:
-    raw = json.loads((directory / 'amdgpu' / _FIRMWARE_MANIFEST).read_text(encoding='utf-8'))
-  except Exception as exc:
-    cloudlog.warning(f'in-tree eGPU firmware manifest unreadable in {directory}: {exc}')
-    return None
-  return _parse_manifest(raw)
+    raw = source.read_bytes()
+  except OSError:
+    return False
+  if hashlib.sha256(raw).hexdigest() != want_hash:
+    cloudlog.warning(f'in-tree firmware {name} is a different build than the one requested; skipping')
+    return False
+  target.write_bytes(raw)
+  cloudlog.info(f'firmware {name} staged from the checkout')
+  return True
 
 
 def _fetch(url: str, target: Path, size: int, want_hash: str) -> None:
@@ -169,25 +172,6 @@ def _report_progress(done: int, total: int) -> None:
     pass
 
 
-def _stage_in_tree(directory: Path, name: str, target: Path, want_size: int, want_hash: str) -> bool:
-  """Copy a blob shipped with the checkout into the shared firmware dir.
-
-  Local and verified, so a device whose mirror is unreachable still gets exactly the
-  blobs the runtime pins. Returns False when the shipped file is missing or wrong.
-  """
-  source = directory / 'amdgpu' / name
-  try:
-    raw = source.read_bytes()
-  except OSError:
-    return False
-  if len(raw) != want_size or hashlib.sha256(raw).hexdigest() != want_hash:
-    cloudlog.warning(f'in-tree firmware {name} does not match the manifest; using the server')
-    return False
-  target.write_bytes(raw)
-  cloudlog.info(f'firmware {name} staged from the checkout')
-  return True
-
-
 def ensure_firmware(model=None, download: Callable[[dict, Path], None] | None = None) -> bool:
   """Make sure every firmware blob is present and verified.
 
@@ -200,11 +184,11 @@ def ensure_firmware(model=None, download: Callable[[dict, Path], None] | None = 
   if model is None:
     return False
 
-  # The in-tree manifest wins: it is the set this checkout ships for this board and the
-  # one the runtime pins. The server's list (when it publishes one) covers a model built
-  # for another GPU arch, and the built-in dict is the last resort.
+  # The server's list wins per name: it publishes the build the precompiled (pkl) runtime
+  # pins. The built-in list supplies the blobs the server does not serve, which are also
+  # the ones shipped in-tree, so a gap can be filled without touching the network.
+  firmware = {**FIRMWARE, **(_remote_firmware(model) or {})}
   in_tree = in_tree_firmware_dir()
-  firmware = _in_tree_firmware() or _remote_firmware(model) or FIRMWARE
 
   FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
   total = sum(size for _, size in firmware.values())
@@ -214,23 +198,34 @@ def ensure_firmware(model=None, download: Callable[[dict, Path], None] | None = 
     target = FIRMWARE_DIR / name
     artifact = {'url': urljoin(model.url, _FIRMWARE_PREFIX + name),
                 'size': want_size, 'sha256': want_hash}
-    needs_download = not (target.is_file() and target.stat().st_size == want_size)
+    # Never rewrite a blob that is already there: the same directory feeds the extracted pkl
+    # runtime and the locally compiled one, and those two pin different builds of the same
+    # names, so a file that looks wrong here may be exactly what the other runtime needs.
+    if target.is_file():
+      if target.stat().st_size != want_size:
+        cloudlog.warning(f'keeping existing firmware {name} ({target.stat().st_size} bytes); '
+                         f'the requested build is {want_size} bytes')
+      continue
     try:
-      if needs_download:
-        if in_tree is not None and _stage_in_tree(in_tree, name, target, want_size, want_hash):
-          pass
-        elif download is not None:
-          download(artifact, target)
-        else:
-          _fetch(artifact['url'], target, want_size, want_hash)
+      if in_tree is not None and _stage_in_tree(in_tree, name, target, want_hash):
+        pass
+      elif in_tree is None:
+        cloudlog.warning(f'firmware {name} is missing and no in-tree copy is available; '
+                         'the eGPU cannot start without it')
+        ok = False
+        continue
+      elif download is not None:
+        download(artifact, target)
+      else:
+        _fetch(artifact['url'], target, want_size, want_hash)
     except Exception as exc:
       # Never discard an otherwise valid model over a firmware mirror problem,
       # but it must be visible: the eGPU cannot start without these.
       cloudlog.warning(f'precompiled firmware {name} unavailable: {exc}')
       ok = False
+      continue
     # Only report when something was actually fetched. Otherwise a normal boot
     # with all blobs present would leave status.json stuck on "downloading".
-    if needs_download:
-      done += want_size
-      _report_progress(done, total)
+    done += want_size
+    _report_progress(done, total)
   return ok
