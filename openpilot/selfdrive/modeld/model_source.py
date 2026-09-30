@@ -40,6 +40,10 @@ OPTIONAL_MODELS = (
     # Self-hosted like the pin: precompiled.json and precompiled-runtime.tar.gz
     # resolve relative to this URL.
     "url": f"{MODEL_BASE}/models/cinque-v3/big_driving_tinygrad.pkl",
+    # Picker metadata (ignored by BigModelManifest.from_dict): the short name this
+    # model is listed under, and that it belongs at the top of the list.
+    "label": "CTM V3",
+    "picker_first": True,
   },
 )
 
@@ -63,6 +67,38 @@ def optional_manifests() -> list:
     except Exception:
       continue
   return out
+
+
+def _picker_meta() -> tuple[dict[str, str], tuple[str, ...]]:
+  """(sha -> short name, leading shas) collected from the pin and the optional models."""
+  labels: dict[str, str] = {}
+  leading: list[str] = []
+  for meta in (PINNED_MODEL, *OPTIONAL_MODELS):
+    sha = meta.get("sha256")
+    if not isinstance(sha, str):
+      continue
+    if isinstance(label := meta.get("label"), str) and label:
+      labels.setdefault(sha, label)
+    if meta.get("picker_first"):
+      leading.append(sha)
+  return labels, tuple(dict.fromkeys(leading))
+
+
+def label_for(sha256: str | None, model_id: str | None = None) -> str | None:
+  """Short name for the model picker, or None to keep the caller's fallback.
+
+  The on-device index has no label field and the server catalog may be unreachable
+  (LAN mirror down, factory-fresh device), so the branch's own models are named here;
+  a label from the server catalog still wins (see egpu_model_select.build_models_payload).
+  """
+  labels, _ = _picker_meta()
+  return labels.get(sha256) if isinstance(sha256, str) else None
+
+
+def picker_rank(sha256: str | None) -> int:
+  """Sort key for the model picker: 0 for the models that are listed first."""
+  _, leading = _picker_meta()
+  return 0 if isinstance(sha256, str) and sha256 in leading else 1
 
 
 def pinned_manifest(manifest_url: str):

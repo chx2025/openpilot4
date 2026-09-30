@@ -26,7 +26,7 @@ from aiohttp import web
 
 from openpilot.selfdrive.modeld import chunked_model, model_catalog
 from openpilot.selfdrive.modeld.big_model import active_manifest, model_cache_dir
-from openpilot.selfdrive.modeld.model_source import MODEL_BASE
+from openpilot.selfdrive.modeld.model_source import MODEL_BASE, label_for, picker_rank
 
 from ..services.params import HAS_PARAMS, Params
 
@@ -164,7 +164,10 @@ def build_models_payload() -> dict[str, Any]:
     # known comes from list_models(), which decides `downloaded` from the ONNX files
     # actually on disk. The index also holds entries pre-registered from the remote
     # catalog, so its presence alone must not count as "downloaded".
-    models.append(_entry(entry.get('label'), entry.get('model_id'), sha, entry.get('size'),
+    # The server's label wins; without one (or offline) the branch's own short name is
+    # used so the picker never shows a raw comma- id for a model we ship.
+    models.append(_entry(entry.get('label') or label_for(sha, entry.get('model_id')),
+                         entry.get('model_id'), sha, entry.get('size'),
                          entry.get('url'), downloaded=bool(known.get('downloaded')),
                          selected=sha == selected, is_active=sha == running,
                          precompiled_only=_is_precompiled_only(entry.get('filename')
@@ -174,10 +177,15 @@ def build_models_payload() -> dict[str, Any]:
   # do the built-in opt-in checkpoints (Cinque v3) that no catalog advertises yet - for
   # those `downloaded` must come from the index instead of being assumed true.
   for sha, known in by_sha.items():
-    models.append(_entry(None, known.get('model_id'), sha, known.get('size'), known.get('url'),
+    models.append(_entry(label_for(sha, known.get('model_id')), known.get('model_id'), sha,
+                         known.get('size'), known.get('url'),
                          downloaded=bool(known.get('downloaded')), selected=sha == selected,
                          is_active=sha == running,
                          precompiled_only=_is_precompiled_only(known.get('filename'))))
+
+  # The branch's own model (Cinque v3 = "CTM V3") leads the picker. Sorting is stable,
+  # so the server catalog's order is kept for everything else.
+  models.sort(key=lambda model: picker_rank(model.get('sha256')))
 
   return {
     'ok': True,
