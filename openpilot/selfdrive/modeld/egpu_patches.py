@@ -67,17 +67,42 @@ TRANSIENT_ERROR_TEXT = (
 _TRANSIENT_WRAPPER_TEXT = "precompiled eGPU worker timed out"
 
 
-def firmware_bases() -> tuple[str, ...]:
-  """Search bases in order: system, persistent cache, then the in-tree blobs."""
-  bases = list(FIRMWARE_BASES)
+def in_tree_firmware_candidates() -> tuple[pathlib.Path, ...]:
+  """Where the blobs shipped with this checkout may live, most likely first.
+
+  Resolved from this file's own location first: it sits at <package>/selfdrive/modeld,
+  so two levels up is the package root. BASEDIR is only a second guess, because it points
+  at the checkout root and the package may be one directory deeper (as on the device).
+  """
+  candidates = [pathlib.Path(__file__).resolve().parents[2] / "system" / "hardware" / "chestnut" / "firmware"]
   try:
     from openpilot.common.basedir import BASEDIR
 
-    in_tree = pathlib.Path(BASEDIR) / "system" / "hardware" / "chestnut" / "firmware"
-    if in_tree.is_dir():
-      bases.append(str(in_tree))
+    basedir = pathlib.Path(BASEDIR)
+    candidates += [basedir / "system" / "hardware" / "chestnut" / "firmware",
+                   basedir / "openpilot" / "system" / "hardware" / "chestnut" / "firmware"]
   except Exception:
     pass
+  return tuple(dict.fromkeys(candidates))
+
+
+def firmware_bases() -> tuple[str, ...]:
+  """Search bases in order: system, persistent cache, then the in-tree blobs."""
+  bases = list(FIRMWARE_BASES)
+  for candidate in in_tree_firmware_candidates():
+    if candidate.is_dir():
+      bases.append(str(candidate))
+  if len(bases) == len(FIRMWARE_BASES):
+    # Not fatal here, but the in-tree blobs are the only copy guaranteed to match the
+    # runtime's pinned hashes: without them an unreachable mirror leaves no way to start
+    # the eGPU, so this must be visible instead of quietly degrading.
+    try:
+      from openpilot.common.swaglog import cloudlog
+
+      cloudlog.warning("eGPU firmware: no in-tree blobs found (looked in "
+                       + ", ".join(str(path) for path in in_tree_firmware_candidates()) + ")")
+    except Exception:
+      pass
   return tuple(dict.fromkeys(bases))
 
 

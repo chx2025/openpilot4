@@ -6,6 +6,10 @@ ensure_firmware(), so pulling upstream changes into that file stays conflict-fre
 The blobs are looked up by the compiled runtime's fetch_fw patch under
 /data/media/0/carrot/firmware (see model_runtime.py). Without them the eGPU never
 initializes, even when the model itself is valid.
+
+They also ship in-tree (system/hardware/chestnut/firmware/amdgpu): that copy is preferred
+and staged into the shared firmware dir, so a device initialises the eGPU with no network
+at all. Only their absence falls back to downloading from the model server.
 """
 from __future__ import annotations
 
@@ -27,33 +31,53 @@ FIRMWARE_DIR = Path('/data/media/0/carrot/firmware/amdgpu')
 _FIRMWARE_MANIFEST = 'manifest.json'
 
 # name -> (sha256 of the .zst exactly as served, size in bytes)
-# Fallback for the current GPU (gfx1200); must match checksums.sha256 otherwise.
+# Last-resort list for the current GPU (gfx1200): the in-tree manifest is preferred when
+# this checkout ships it (see _in_tree_firmware), because only those hashes are the ones
+# the runtime actually pins and asks for.
 FIRMWARE: dict[str, tuple[str, int]] = {
-  'smu_14_0_2.bin.zst':    ('4c80055939f89ce619a8aaf71882fa04d426279191f893ff32acf02dc4861476', 137291),
-  'gc_12_0_0_me.bin.zst':  ('ef7fbca61215ae42dbb96048467793e7f7a06de139e4df7121be11d70750ebd6', 47877),
-  'gc_12_0_0_mec.bin.zst': ('b0d5ac1728f43873f03d94f27c8e9807e42e42653fb76054577dbd08befeb43e', 82417),
-  'gc_12_0_0_pfp.bin.zst': ('aae909f6c0481b2761a4193f1ed26e793676f83abb8db16e966402ecf120b8c4', 41901),
+  'smu_14_0_2.bin.zst':    ('31158ca48f44fb226c855afd066732afd179f3871a9a1689c4410bc206bee293', 137070),
+  'gc_12_0_0_me.bin.zst':  ('ba1a2a3f0c557209703ca94ef20cadcec138b67a2c6f1d4ad1fdfc8fca12128d', 52076),
+  'gc_12_0_0_mec.bin.zst': ('dc74fcf8409bd735d9dbf5922884dc70f9c2c75948821391707b7fdb3475df38', 84163),
+  'gc_12_0_0_pfp.bin.zst': ('f8c98eea560615cf7a43fe29d16cc1bbac7976d278bbde897ed2daa45f48eb40', 41513),
+  'gc_12_0_0_rlc.bin.zst': ('01806109f63d4fe294b4bd108a34a0439c9a9568d45f71a039ef476ff9cb3010', 48374),
+  'gc_12_0_0_imu.bin.zst': ('aaabca90b09db1b3f90f9ca717be19af0bd2f3295cfe6c227bf835c5428c3fb4', 21297),
+  'psp_14_0_2_sos.bin.zst': ('42646102d34b9005e705831027ddf27ec952d5542dedd652ad82338f3b8e8ff9', 184938),
+  'sdma_7_0_0.bin.zst':    ('cb68fe7868ea11440c93cf03b0b67da635b963b7a020055b6ce4c8f844236ec7', 18184),
 }
 
 # Firmware sits next to the model root, one level above the model file's directory.
 _FIRMWARE_PREFIX = '../firmware/amdgpu/'
 
+# This file lives in <package>/selfdrive/modeld, so two levels up is the package root and
+# the blobs shipped with the checkout are at <package>/system/hardware/chestnut/firmware.
+# Resolving it from __file__ keeps working whatever BASEDIR points at.
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
-def _remote_firmware(model) -> dict[str, tuple[str, int]] | None:
-  """Firmware list published by the server next to the blobs, if any.
 
-  Lets a model built for a different GPU arch ship its own firmware without a
-  code change here. Any problem simply falls back to the built-in FIRMWARE.
-  """
-  url = urljoin(model.url, _FIRMWARE_PREFIX + _FIRMWARE_MANIFEST)
+def _in_tree_candidates() -> tuple[Path, ...]:
+  """Where the shipped blobs may live, most likely first."""
+  candidates = [_PACKAGE_ROOT / 'system' / 'hardware' / 'chestnut' / 'firmware']
   try:
-    with urlopen(Request(url, headers={'Accept-Encoding': 'identity'}), timeout=15) as response:
-      if response.status != 200:
-        return None
-      raw = json.loads(response.read().decode('utf-8'))
-  except Exception:
-    return None
+    from openpilot.common.basedir import BASEDIR
 
+    base = Path(BASEDIR)
+    candidates += [base / 'system' / 'hardware' / 'chestnut' / 'firmware',
+                   base / 'openpilot' / 'system' / 'hardware' / 'chestnut' / 'firmware']
+  except Exception:
+    pass
+  return tuple(dict.fromkeys(candidates))
+
+
+def in_tree_firmware_dir() -> Path | None:
+  """Directory holding the blobs shipped with this checkout, or None when absent."""
+  for candidate in _in_tree_candidates():
+    if (candidate / 'amdgpu').is_dir():
+      return candidate
+  return None
+
+
+def _parse_manifest(raw) -> dict[str, tuple[str, int]] | None:
+  """name -> (sha256 of the .zst, size) from a manifest body, or None when unusable."""
   files = raw.get('files') if isinstance(raw, dict) else None
   if not isinstance(files, dict):
     return None
@@ -65,6 +89,43 @@ def _remote_firmware(model) -> dict[str, tuple[str, int]] | None:
     if isinstance(sha, str) and len(sha) == 64 and isinstance(size, int) and size > 0:
       out[name] = (sha, size)
   return out or None
+
+
+def _remote_firmware(model) -> dict[str, tuple[str, int]] | None:
+  """Firmware list published by the server next to the blobs, if any.
+
+  Lets a model built for a different GPU arch ship its own firmware without a
+  code change here. Any problem simply falls back to the in-tree manifest.
+  """
+  url = urljoin(model.url, _FIRMWARE_PREFIX + _FIRMWARE_MANIFEST)
+  try:
+    with urlopen(Request(url, headers={'Accept-Encoding': 'identity'}), timeout=15) as response:
+      if response.status != 200:
+        return None
+      raw = json.loads(response.read().decode('utf-8'))
+  except Exception:
+    return None
+  return _parse_manifest(raw)
+
+
+def _in_tree_firmware() -> dict[str, tuple[str, int]] | None:
+  """Manifest of the blobs shipped with this checkout, or None when absent.
+
+  This is the set the runtime pins for this board: when it is missing the device has to
+  download from the model server, and an unreachable mirror leaves the eGPU unable to
+  initialise at all, so say so instead of failing silently.
+  """
+  directory = in_tree_firmware_dir()
+  if directory is None:
+    cloudlog.warning('in-tree eGPU firmware not found (looked in '
+                     + ', '.join(str(path) for path in _in_tree_candidates()) + ')')
+    return None
+  try:
+    raw = json.loads((directory / 'amdgpu' / _FIRMWARE_MANIFEST).read_text(encoding='utf-8'))
+  except Exception as exc:
+    cloudlog.warning(f'in-tree eGPU firmware manifest unreadable in {directory}: {exc}')
+    return None
+  return _parse_manifest(raw)
 
 
 def _fetch(url: str, target: Path, size: int, want_hash: str) -> None:
@@ -108,6 +169,25 @@ def _report_progress(done: int, total: int) -> None:
     pass
 
 
+def _stage_in_tree(directory: Path, name: str, target: Path, want_size: int, want_hash: str) -> bool:
+  """Copy a blob shipped with the checkout into the shared firmware dir.
+
+  Local and verified, so a device whose mirror is unreachable still gets exactly the
+  blobs the runtime pins. Returns False when the shipped file is missing or wrong.
+  """
+  source = directory / 'amdgpu' / name
+  try:
+    raw = source.read_bytes()
+  except OSError:
+    return False
+  if len(raw) != want_size or hashlib.sha256(raw).hexdigest() != want_hash:
+    cloudlog.warning(f'in-tree firmware {name} does not match the manifest; using the server')
+    return False
+  target.write_bytes(raw)
+  cloudlog.info(f'firmware {name} staged from the checkout')
+  return True
+
+
 def ensure_firmware(model=None, download: Callable[[dict, Path], None] | None = None) -> bool:
   """Make sure every firmware blob is present and verified.
 
@@ -120,8 +200,11 @@ def ensure_firmware(model=None, download: Callable[[dict, Path], None] | None = 
   if model is None:
     return False
 
-  # Prefer the server's list, so a model for another GPU arch needs no code change.
-  firmware = _remote_firmware(model) or FIRMWARE
+  # The in-tree manifest wins: it is the set this checkout ships for this board and the
+  # one the runtime pins. The server's list (when it publishes one) covers a model built
+  # for another GPU arch, and the built-in dict is the last resort.
+  in_tree = in_tree_firmware_dir()
+  firmware = _in_tree_firmware() or _remote_firmware(model) or FIRMWARE
 
   FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
   total = sum(size for _, size in firmware.values())
@@ -134,7 +217,9 @@ def ensure_firmware(model=None, download: Callable[[dict, Path], None] | None = 
     needs_download = not (target.is_file() and target.stat().st_size == want_size)
     try:
       if needs_download:
-        if download is not None:
+        if in_tree is not None and _stage_in_tree(in_tree, name, target, want_size, want_hash):
+          pass
+        elif download is not None:
           download(artifact, target)
         else:
           _fetch(artifact['url'], target, want_size, want_hash)

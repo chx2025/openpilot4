@@ -31,11 +31,25 @@ _FW_OLD = '''  def fetch_fw(path, name, sha256):
         return blob
     return _orig(path, name, sha256)'''
 
-_FW_NEW = '''  # Firmware search path: read-only system dir, the persistent /data dir and the
-  # blobs shipped in-tree for this board.
-  from openpilot.common.basedir import BASEDIR
-  _FW_BASES = ("/lib/firmware", "/data/media/0/carrot/firmware",
-               str(pathlib.Path(BASEDIR) / 'system' / 'hardware' / 'chestnut' / 'firmware'))
+_FW_NEW = '''  # Firmware search path: read-only system dir, the persistent /data dir and the blobs
+  # shipped in-tree for this board. This file is extracted into the model cache, so the
+  # checkout cannot be located from __file__: probe both layouts it may have.
+  import pathlib
+  _FW_BASES = ["/lib/firmware", "/data/media/0/carrot/firmware"]
+  for _cand in ("/data/openpilot/system/hardware/chestnut/firmware",
+                "/data/openpilot/openpilot/system/hardware/chestnut/firmware"):
+    if pathlib.Path(_cand).is_dir() and _cand not in _FW_BASES:
+      _FW_BASES.append(_cand)
+  try:
+    from openpilot.common.basedir import BASEDIR
+    _FW_ROOT = pathlib.Path(BASEDIR)
+    for _cand in (_FW_ROOT / 'system' / 'hardware' / 'chestnut' / 'firmware',
+                  _FW_ROOT / 'openpilot' / 'system' / 'hardware' / 'chestnut' / 'firmware'):
+      if _cand.is_dir() and str(_cand) not in _FW_BASES:
+        _FW_BASES.append(str(_cand))
+  except Exception:
+    pass
+  _FW_BASES = tuple(_FW_BASES)
   def fetch_fw(path, name, sha256):
     for base in _FW_BASES:
       p = pathlib.Path(base) / path / (name + ".zst")
@@ -63,9 +77,19 @@ if not globals().get('_FORK_FW_WRAPPED'):
   import hashlib as _FORK_HS
   import pathlib as _FORK_PL
   _FORK_FW_BASES = ['/lib/firmware', '/data/media/0/carrot/firmware']
+  # The checkout path is not derivable from inside an extracted runtime, so probe both
+  # layouts the in-tree blobs may live at (same candidates as firmware.py).
+  for _FORK_CAND in ('/data/openpilot/system/hardware/chestnut/firmware',
+                     '/data/openpilot/openpilot/system/hardware/chestnut/firmware'):
+    if _FORK_PL.Path(_FORK_CAND).is_dir() and _FORK_CAND not in _FORK_FW_BASES:
+      _FORK_FW_BASES.append(_FORK_CAND)
   try:
     from openpilot.common.basedir import BASEDIR as _FORK_BASEDIR
-    _FORK_FW_BASES.append(str(_FORK_PL.Path(_FORK_BASEDIR) / 'system' / 'hardware' / 'chestnut' / 'firmware'))
+    _FORK_ROOT = _FORK_PL.Path(_FORK_BASEDIR)
+    for _FORK_CAND in (str(_FORK_ROOT / 'system' / 'hardware' / 'chestnut' / 'firmware'),
+                       str(_FORK_ROOT / 'openpilot' / 'system' / 'hardware' / 'chestnut' / 'firmware')):
+      if _FORK_PL.Path(_FORK_CAND).is_dir() and _FORK_CAND not in _FORK_FW_BASES:
+        _FORK_FW_BASES.append(_FORK_CAND)
   except Exception:
     pass
   _FORK_FW_ORIG = fetch_fw
