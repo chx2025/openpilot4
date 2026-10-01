@@ -161,6 +161,9 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     torqueNNLoad @118;
     updateRebootRequired @125;
     driverMonitorFallback @126;
+    systemReady @127;
+    impactDetected @128;
+    impactDashcamReboot @129;
 
     soundsUnavailableDEPRECATED @47;
   }

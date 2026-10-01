@@ -34,6 +34,7 @@ from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 from openpilot.selfdrive.carrot.carrot_controls import CarrotControls
 from openpilot.selfdrive.carrot.carrot_man_input import get_carrot_man
+from openpilot.selfdrive.monitoring.dm_alerts import driver_monitoring_hud_alert
 
 State = log.SelfdriveState.OpenpilotState
 LaneChangeState = log.LaneChangeState
@@ -113,13 +114,11 @@ class Controls:
     # Update VehicleModel
     lp = self.sm['liveParameters']
     x = max(lp.stiffnessFactor, 0.1)
-    # VW MEB uses the learned ratio directly. Other platforms may scale it or
-    # override it, but legacy/out-of-range persisted rates must never collapse
-    # the vehicle-model ratio and destabilize lateral feedback.
+    # All platforms, including VW MEB, honor the manual ratio and live scaling.
+    # Invalid persisted rates still fall back to the unscaled learned ratio.
     sr = resolve_vehicle_model_steer_ratio(lp.steerRatio,
                                            self.params.get_float("SteerRatioRate"),
-                                           self.params.get_float("CustomSR"),
-                                           self.is_vw_meb)
+                                           self.params.get_float("CustomSR"))
     self.VM.update_params(x, sr)
 
     steer_angle_without_offset = math.radians(CS.steeringAngleDeg - lp.angleOffsetDeg)
@@ -153,6 +152,10 @@ class Controls:
                                            CS.standstill, steer_at_standstill)
     CC.latActive = self.carrot_controls.lat_suspend_control(CS, CC.latActive)
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
+
+    # AlwaysLateral must also stop while manager drains workers for this reboot.
+    if self.params.get_bool("ImpactDashcamReboot"):
+      CC.enabled = CC.latActive = CC.longActive = False
 
     actuators = CC.actuators
 
@@ -355,6 +358,7 @@ class Controls:
     hudControl.leadVisible = self.sm['longitudinalPlan'].hasLead
     hudControl.leadDistanceBars = self.sm['selfdriveState'].personality.raw + 1
     hudControl.visualAlert = self.sm['selfdriveState'].alertHudVisual
+    hudControl.driverMonitoringAlert = driver_monitoring_hud_alert(self.sm)
 
     radarState = self.sm['radarState']
     leadOne = radarState.leadOne
