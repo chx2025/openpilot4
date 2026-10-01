@@ -8,10 +8,15 @@ import time
 import numpy as np
 
 from openpilot.selfdrive.modeld.jetlink import VENDOR  # noqa: F401
+from openpilot.selfdrive.modeld.jetlink.models import spec_path
 from openpilot.common.jetlink_status import badge  # noqa: F401
 from jetlink.spec import ModelSpec
 
-SPEC = ModelSpec.from_dict(json.loads(Path(__file__).with_name('cinque_v2.json').read_text()))
+# Both ends have to agree on this: the sha256 inside the SPEC names the cache
+# file on each side and the host builds its engine for it. Which SPEC is loaded
+# follows the selected model (models.py) instead of a name fixed here, so
+# switching models stays one edit deep.
+SPEC = ModelSpec.from_dict(json.loads(spec_path().read_text()))
 SOCKET = '/dev/shm/carrot-jetlink.sock'
 STATUS = Path('/dev/shm/carrot-jetlink.json')
 FAULT = Path('/dev/shm/carrot-jetlink-fault')

@@ -7,6 +7,7 @@ import time
 import numpy as np
 
 from openpilot.selfdrive.modeld.jetlink.link import Client, SPEC, FAULT, state
+from openpilot.selfdrive.modeld.jetlink.models import label
 
 MODEL_STATUS = Path('/dev/shm/carrot-jetlink-model.json')
 
@@ -105,7 +106,7 @@ class JoiningModel:
                                 {k: sm.valid[k] and sm.alive[k] for k in ('carState', 'selfdriveState', 'carControl')}, sm.recv_time)
     if now >= self.next_status:
       self.ready = state().get('state') == 'ready'
-      record = dict(active=self.active, ready=self.ready, model='Cinque v2', error=self.error, updated=now)
+      record = dict(active=self.active, ready=self.ready, model=label(), error=self.error, updated=now)
       tmp = MODEL_STATUS.with_suffix('.tmp')
       tmp.write_text(json.dumps(record))
       os.replace(tmp, MODEL_STATUS)
@@ -151,7 +152,7 @@ class JoiningModel:
         # reply still has the full output length with hidden_state zeroed,
         # which keeps the output_slices below valid.
         if not self.active:
-          cloudlog.warning('Jetlink active: Cinque v2 %s', SPEC.sha256)
+          cloudlog.warning('Jetlink active: %s %s', label(), SPEC.sha256)
           self.active = True
           self.error = ''
           self.next_status = 0

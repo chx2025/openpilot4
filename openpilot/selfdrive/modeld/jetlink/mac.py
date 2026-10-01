@@ -2,9 +2,10 @@
 
 Every host gets the same treatment. A server that already has an engine for the
 pinned model validates in place; one that does not is sent the ONNX, which the
-comma keeps in CACHE or downloads from MODEL_URL first. The unmodified upstream
-Mac app is the special case: its preparation waits for ignition-off and polls
-for cancellation while the app builds by itself.
+comma keeps in CACHE or downloads from the selected model's URL first (which
+model that is lives in models.py). The unmodified upstream Mac app is the
+special case: its preparation waits for ignition-off and polls for cancellation
+while the app builds by itself.
 """
 import hashlib
 import os
@@ -16,14 +17,9 @@ import urllib.request
 
 from openpilot.common.jetlink_peer import is_mac_peer
 from openpilot.selfdrive.modeld.jetlink.link import SPEC, validate_spec
+from openpilot.selfdrive.modeld.jetlink.models import CACHE, LEGACY_CACHE, label, model_url
 from jetlink.client import EngineMissing
 from jetlink.transport.base import LinkTimeout
-
-MODEL_URL = 'https://upload.shind0.synology.me/models/carrot-jetlink-cinque-v2/big_driving_supercombo.onnx'
-CACHE = Path('/data/models/carrot-jetlink-host')
-# The same ONNX was cached here when only the Mac app could be provisioned:
-# reuse it rather than download 766 MB again.
-LEGACY_CACHE = Path('/data/models/carrot-jetlink-mac')
 
 
 class PreparationDeferred(RuntimeError):
@@ -57,11 +53,15 @@ def model_file(offroad, connected, progress, cache=CACHE):
     raise OSError('Not enough free space for the model')
   fd, name = tempfile.mkstemp(dir=cache, prefix='download-', suffix='.part')
   temporary = Path(name)
+  # Resolve both once: the loop below runs for minutes and the selection cannot
+  # change under it without a reboot anyway.
+  url = model_url()
+  model_label = label()
   try:
-    progress('download', 0., 'Downloading Cinque v2')
+    progress('download', 0., f'Downloading {model_label}')
     with os.fdopen(fd, 'wb') as output:
-      with urllib.request.urlopen(MODEL_URL, timeout=10) as response:
-        if response.geturl() != MODEL_URL:
+      with urllib.request.urlopen(url, timeout=10) as response:
+        if response.geturl() != url:
           raise ValueError('Unexpected model download redirect')
         count, value = 0, hashlib.sha256()
         while True:
@@ -76,7 +76,7 @@ def model_file(offroad, connected, progress, cache=CACHE):
             raise ValueError('Oversized model download')
           output.write(block)
           value.update(block)
-          progress('download', count / SPEC.nbytes, 'Downloading Cinque v2')
+          progress('download', count / SPEC.nbytes, f'Downloading {model_label}')
       if count != SPEC.nbytes or value.hexdigest() != SPEC.sha256:
         raise ValueError('Model checksum/size mismatch')
       require_setup(offroad, connected)
@@ -126,9 +126,9 @@ def provision(client, offroad, connected, progress, cache=CACHE):
 
   The quick probe keeps a host that is already prepared (a Jetson, or a phone
   app that downloaded the model itself) on the fast path. A need_upload answer
-  means the model comes from here: the cache, or MODEL_URL when it is missing.
-  The host's build then takes minutes, so this runs offroad only and stops with
-  the link.
+  means the model comes from here: the cache, or the selected model's URL when
+  it is missing. The host's build then takes minutes, so this runs offroad only
+  and stops with the link.
   """
   try:
     validate_spec(client.ensure_engine(SPEC.sha256, SPEC.nbytes, frame_skip=SPEC.frame_skip, build_timeout=30))

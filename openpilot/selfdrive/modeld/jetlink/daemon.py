@@ -14,6 +14,7 @@ import numpy as np
 
 from openpilot.selfdrive.modeld.jetlink import VENDOR
 from openpilot.selfdrive.modeld.jetlink.link import (SPEC, SOCKET, STATUS, REQUEST, REPLY, PacketReader, send, send_parts)
+from openpilot.selfdrive.modeld.jetlink.models import label
 from openpilot.selfdrive.modeld.jetlink.phase import Publisher as PhasePublisher
 from openpilot.selfdrive.modeld.jetlink.mac import prepare, PreparationDeferred
 from jetlink.client import JetlinkClient
@@ -100,7 +101,7 @@ def host_attached():
 
 
 def publish(status, **extra):
-  record = dict(state=status, updated=time.monotonic(), model='Cinque v2', sha256=SPEC.sha256, **extra)
+  record = dict(state=status, updated=time.monotonic(), model=label(), sha256=SPEC.sha256, **extra)
   temporary = STATUS.with_suffix('.tmp')
   temporary.write_text(json.dumps(record))
   os.replace(temporary, STATUS)

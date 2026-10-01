@@ -8,6 +8,7 @@ from . import (
   egpu_model,
   egpu_model_select,
   intro,
+  jetlink_model_select,
   mapbox_tokens,
   params,
   screenrecord,
@@ -53,6 +54,7 @@ def register_all(app: web.Application) -> None:
   dashcam.register(app)
   egpu_model.register(app)
   egpu_model_select.register(app)
+  jetlink_model_select.register(app)
   screenrecord.register(app)
   tools.register(app)
   xiaoge.register(app)
