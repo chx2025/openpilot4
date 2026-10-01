@@ -389,8 +389,6 @@ def main():
           # fetch its first model. This is outside every model frame deadline.
           wifi.send(client, initial=True)
         publish('loading', peer=peer, seq=client.seq, src=__file__)
-        from openpilot.common.params import Params
-        params = Params()
         last_progress = 0.
 
         def progress(stage, fraction, message):
@@ -399,8 +397,14 @@ def main():
             publish('loading', peer=peer, preparation={'stage': stage, 'fraction': fraction, 'message': str(message)[:160]})
             last_progress = time.monotonic()
 
-        prepare(client, peer, lambda: params.get_bool('IsOffroad') and not params.get_bool('IsOnroad'),
-                host_attached, progress)
+        # Provisioning is deliberately not gated on offroad. A comma wired into a
+        # car powers up straight into onroad and may never see offroad, so the gate
+        # left those devices permanently without a model; and it bought nothing.
+        # The engine probe only reads, and while the ONNX uploads and the host
+        # builds, this link serves no frames at all - the built-in model drives the
+        # car meanwhile. host_attached() still tears preparation down with the
+        # cable, which is the interruption that actually invalidates it.
+        prepare(client, peer, lambda: True, host_attached, progress)
         # The app posts its USB read ring as it opens the device, and a frame
         # written before that ring is up is abandoned at the frame deadline;
         # protocol 3 answers an abandoned write by dropping the gadget, which
