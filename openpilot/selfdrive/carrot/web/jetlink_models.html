@@ -124,12 +124,15 @@
   所以<b>切换模型 = 重新下载 ONNX（约 766 MB）+ 主机重建</b>，没有更省的办法。<br>
   <b>只能在停车熄火（offroad）时切换</b>，切换后需要重启设备才会生效；ONNX 会在下次连上主机时由
   comma 自己下载或从已有缓存上传。<br>
-  <b>ONNX 和大模型（eGPU）共用</b>：若 <code>/data/media/0/carrot/models/</code> 里已有同 sha256
-  的文件就直接用它，不会再下载一份；只有那里没有时才存到
-  <code>/data/models/carrot-jetlink-host/</code>（该目录的文件可在此页删除，借用的不会被删）。
+  <b>ONNX 和大模型（eGPU）共用一个文件</b>：先在
+  <code>/data/media/0/carrot/models/</code> 里找同 sha256 的文件，下载新的也优先写到这里
+  —— eGPU 页面靠文件名识别已下载，所以它会立刻显示「已下载」，不会再下一份。
+  只有 eGPU 不认识的模型才存到 <code>/data/models/carrot-jetlink-host/</code>
+  （那里的文件可在此页删除；共用那份归 eGPU 管，要去 eGPU 页面删）。
   当前选择记在 <code>/data/models/carrot-jetlink/index.json</code>。<br>
   带 <code>内置</code> 徽章的是本分支随仓发布的模型；其余来自服务器目录
-  <code>&lt;MODEL_BASE&gt;/jetlink/catalog.json</code>。
+  <code>&lt;MODEL_BASE&gt;/models/catalog.json</code>（<b>和 eGPU 用的是同一份文件</b>，
+  条目里带 SPEC 的才会出现在这里）。
 </footer>
 
 <script>

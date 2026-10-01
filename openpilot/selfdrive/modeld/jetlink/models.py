@@ -34,15 +34,23 @@ LEGACY_CACHE = Path('/data/models/carrot-jetlink-mac')
 # database, so a device with no manager running still resolves it.
 INDEX = Path('/data/models/carrot-jetlink/index.json')
 
-CATALOG_PATH = 'jetlink/catalog.json'
+# The eGPU picker's own catalog, not a second one of ours: it already lists every
+# checkpoint the device can fetch, and its parser reads only the five fields it
+# knows, so a jetlink SPEC rides along in the same entry. One file on the server,
+# two consumers.
+CATALOG_PATH = 'models/catalog.json'
 REMOTE_TIMEOUT = 6.0
 
-# The eGPU picker keeps big models in its own cache, under a shorter name
-# (big_driving_supercombo-<sha16>.onnx). The pinned checkpoints are the same
-# files - same sha256 - so a copy found there is uploaded as-is instead of being
-# downloaded and stored a second time. Borrowed files are only ever read: they
-# belong to the eGPU picker, so remove() leaves them alone.
+# The eGPU picker keeps big models in its own cache and decides a model is
+# downloaded purely from the file name it finds there
+# (big_driving_supercombo-<sha16>.onnx). So the same checkpoint is written there,
+# under that name, whichever picker asked for it first: one download, one copy on
+# disk. A file jetlink did not write is only ever read - remove() leaves it alone.
 SHARED_CACHE_FALLBACK = Path('/data/media/0/carrot/models')
+
+# sha256s the eGPU catalog lists, filled by remote_catalog(). Tells
+# download_target whether the eGPU page will recognise a downloaded file.
+_EGPU_SHAS: set[str] = set()
 
 # Resolved on first use; see selected_entry().
 _RESOLVED: dict | None = None
@@ -88,13 +96,16 @@ def _base_url() -> str | None:
 
 
 def remote_catalog() -> list[dict] | None:
-  """Optional server-side list of selectable jetlink models.
+  """The eGPU catalog, narrowed to the models jetlink can actually drive.
 
-  Same shape as the eGPU catalog: {"models": [{sha256, label, size, url, spec}]}
-  where `spec` is either the SPEC document itself or a SPEC file name kept in
-  this directory. A model whose SPEC is unavailable here cannot be used, because
-  the contract has to exist on both ends.
+  It is the same file the eGPU picker reads (<MODEL_BASE>/models/catalog.json), so
+  the server keeps one list for both. An entry is usable here only when it carries
+  a SPEC whose sha256 matches: the eGPU simply ignores that field, but a model
+  without a contract could never be agreed on with the host. Every listed sha256 is
+  remembered, usable or not, so download_target can tell which files the eGPU page
+  will recognise.
   """
+  global _EGPU_SHAS
   base = _base_url()
   if not base:
     return None
@@ -113,6 +124,7 @@ def remote_catalog() -> list[dict] | None:
   entries = value.get('models')
   if not isinstance(entries, list):
     return None
+  listed: set[str] = set()
   result: list[dict] = []
   for entry in entries:
     if not isinstance(entry, dict):
@@ -120,8 +132,9 @@ def remote_catalog() -> list[dict] | None:
     sha = entry.get('sha256')
     if not isinstance(sha, str) or len(sha) != 64:
       continue
+    listed.add(sha)
     spec = entry.get('spec')
-    spec_file = entry.get('spec_file') or entry.get('filename')
+    spec_file = entry.get('spec_file')
     if not isinstance(spec, dict) and isinstance(spec_file, str):
       spec = _read_json(SPEC_DIR / Path(spec_file).name)
     if not isinstance(spec, dict) or spec.get('sha256') != sha:
@@ -129,8 +142,10 @@ def remote_catalog() -> list[dict] | None:
       continue
     result.append({'sha256': sha, 'label': entry.get('label') or sha[:12],
                    'spec': spec, 'spec_file': spec_file if isinstance(spec_file, str) else None,
-                   'url': entry.get('url'), 'nbytes': entry.get('nbytes') or spec.get('nbytes'),
+                   'url': entry.get('url'), 'filename': entry.get('filename'),
+                   'nbytes': entry.get('nbytes') or entry.get('size') or spec.get('nbytes'),
                    'builtin': False})
+  _EGPU_SHAS = listed
   return result
 
 
@@ -316,6 +331,23 @@ def shared_paths(sha256: str) -> list[Path]:
     return [path for path in _shared_cache().glob(f'*-{sha256[:16]}.onnx') if path.is_file()]
   except OSError:
     return []
+
+
+def download_target(entry: dict, cache: Path = CACHE) -> Path:
+  """Where a fresh download of this entry lands.
+
+  A checkpoint the eGPU catalog also lists is written into the eGPU cache, under
+  the name its page looks for, so the device fetches it once and neither picker
+  then offers a download that is already on disk. A model only jetlink knows stays
+  in our own cache, instead of putting a file in that directory which the eGPU
+  page would never list.
+  """
+  sha = entry.get('sha256') or ''
+  name = entry.get('filename') or 'big_driving_supercombo.onnx'
+  if sha in _EGPU_SHAS and name.endswith('.onnx'):
+    stem, suffix = os.path.splitext(Path(name).name)
+    return _shared_cache() / f'{stem}-{sha[:16]}{suffix}'
+  return cache / f'{sha}.onnx'
 
 
 def cached_paths(sha256: str | None = None, refresh: bool = True) -> list[Path]:
