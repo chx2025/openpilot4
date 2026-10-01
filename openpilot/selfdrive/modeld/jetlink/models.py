@@ -139,16 +139,35 @@ def read_index() -> dict:
   return value if isinstance(value, dict) else {}
 
 
-def write_index(selected: str | None) -> bool:
-  INDEX.parent.mkdir(parents=True, exist_ok=True)
-  temporary = INDEX.with_suffix('.tmp')
+def _write_json(path: Path, value) -> bool:
+  """Atomic write: a half-written SPEC or index reads back as garbage."""
+  temporary = path.with_suffix('.tmp')
   try:
-    temporary.write_text(json.dumps({'selected': selected}, indent=2))
-    os.replace(temporary, INDEX)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary.write_text(json.dumps(value, indent=2))
+    os.replace(temporary, path)
   except OSError:
-    temporary.unlink(missing_ok=True)
+    try:
+      temporary.unlink(missing_ok=True)
+    except OSError:
+      pass
     return False
   return True
+
+
+def write_index(selected: str | None, entry: dict | None = None) -> bool:
+  """Record the choice, and enough about it to survive an unreachable catalog.
+
+  The label and URL travel with the sha256: this device may boot somewhere the
+  catalog cannot be reached, and it still has to be able to name the model it is
+  running and fetch it if the cache is gone.
+  """
+  value: dict = {'selected': selected}
+  if isinstance(entry, dict):
+    for key in ('label', 'url', 'nbytes'):
+      if entry.get(key) is not None:
+        value[key] = entry[key]
+  return _write_json(INDEX, value)
 
 
 def entries(refresh: bool = True) -> list[dict]:
@@ -189,10 +208,23 @@ def selected_entry(refresh: bool = True) -> dict:
 def _resolve_selected(refresh: bool) -> dict:
   builtin = _builtin()
   fallback = builtin[0] if builtin else None
-  sha = read_index().get('selected')
+  index = read_index()
+  sha = index.get('selected')
   if not isinstance(sha, str) or len(sha) != 64:
     return fallback or {}
-  return entry_for(sha, refresh) or fallback or {}
+  found = entry_for(sha, refresh)
+  if found is not None:
+    return found
+  # Nothing describes this sha right now - the catalog is unreachable, or the
+  # entry was withdrawn - but the device was switched to it, and must not
+  # silently become a different model. Rebuild the entry from the index and the
+  # SPEC on disk; if even that is gone, falling back is the only honest option.
+  materialised = spec_dir() / f'{sha}.json'
+  if materialised.is_file():
+    return {'sha256': sha, 'label': index.get('label') or sha[:12],
+            'spec_file': materialised.name, 'spec': _read_json(materialised),
+            'url': index.get('url'), 'nbytes': index.get('nbytes'), 'builtin': False}
+  return fallback or {}
 
 
 def selected_sha(refresh: bool = True) -> str | None:
@@ -205,19 +237,51 @@ def label(refresh: bool = True) -> str:
   return entry.get('label') or DEFAULT_LABEL
 
 
-def spec_path(refresh: bool = True) -> Path:
-  """Path of the SPEC the jetlink code must load.
+def spec_dir() -> Path:
+  """Where a SPEC the device was switched to is kept (next to the index).
 
-  Always returns an existing file: a selection whose SPEC cannot be found would
-  otherwise leave the device unable to describe itself on the wire.
+  link.py reads the SPEC at import time, so a catalog entry that carries its
+  contract inline has to exist as a file before the next boot can use it. Keeping
+  those copies beside the index also means an unreachable catalog cannot strand a
+  device on the wrong contract.
   """
-  entry = selected_entry(refresh)
+  return INDEX.parent
+
+
+def _materialise(entry: dict) -> Path | None:
+  """Make sure this entry's SPEC exists on disk; return its path, or None."""
+  sha = entry.get('sha256')
+  if isinstance(sha, str) and len(sha) == 64:
+    materialised = spec_dir() / f'{sha}.json'
+    if materialised.is_file():
+      return materialised
   name = entry.get('spec_file')
   if isinstance(name, str):
     candidate = SPEC_DIR / Path(name).name
     if candidate.is_file():
       return candidate
-  return SPEC_DIR / BUILTIN_SPEC
+  spec = entry.get('spec')
+  if isinstance(spec, dict) and isinstance(sha, str) and spec.get('sha256') == sha:
+    path = spec_dir() / f'{sha}.json'
+    if _write_json(path, spec):
+      return path
+  return None
+
+
+def spec_path(refresh: bool = True) -> Path:
+  """Path of the SPEC the jetlink code must load.
+
+  Always returns an existing file: a selection whose SPEC cannot be found would
+  otherwise leave the device describing a different contract than the one the
+  host validated.
+  """
+  sha = read_index().get('selected')
+  if isinstance(sha, str) and len(sha) == 64:
+    materialised = spec_dir() / f'{sha}.json'
+    if materialised.is_file():
+      return materialised
+  path = _materialise(selected_entry(refresh))
+  return path if path is not None else SPEC_DIR / BUILTIN_SPEC
 
 
 def model_url(refresh: bool = True) -> str:
@@ -275,9 +339,13 @@ def shared_only(sha256: str | None = None, refresh: bool = True) -> bool:
 
 
 def select(sha256: str) -> bool:
-  if entry_for(sha256) is None:
+  entry = entry_for(sha256)
+  if entry is None:
     return False
-  return write_index(sha256)
+  # Write the contract and the entry down now: the next boot reads them from
+  # disk, and by then the catalog may well be unreachable.
+  _materialise(entry)
+  return write_index(sha256, entry)
 
 
 def remove(sha256: str) -> bool:
