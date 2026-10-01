@@ -142,6 +142,7 @@ class Client:
       self.sock.close()
       raise
     self.timings = (0, 0, 0)
+    self.frames = 0
     self.reader = PacketReader(REPLY.size + SPEC.output_nbytes)
 
   def infer(self, image, packed, frame, reset=False, source_sof=0):
@@ -149,8 +150,15 @@ class Client:
       raise ValueError('invalid warped image')
     if packed.dtype != np.float32 or packed.size != SPEC.packed_nelem or not packed.flags.c_contiguous or not np.all(np.isfinite(packed)):
       raise ValueError('invalid recurrent input')
-    deadline = time.monotonic() + self.timeout
-    self.sock.settimeout(self.timeout)
+    # The app compiles or loads its engine on the first frames after a join, and
+    # on an NPU that build can take minutes, while the steady-state budget is
+    # only a few hundred ms. Waiting the strict budget here abandoned every join
+    # before it could produce a single frame, which left the fallback model in
+    # place and the phone reported as "timed out" forever.
+    budget = max(self.timeout, 300.0) if self.frames < 3 else self.timeout
+    self.frames += 1
+    deadline = time.monotonic() + budget
+    self.sock.settimeout(budget)
     send_parts(self.sock, REQUEST.pack(frame, int(reset), source_sof), image, packed, deadline=deadline)
     reply = self.reader.receive(self.sock, deadline)
     if len(reply) != REPLY.size + SPEC.output_nbytes:

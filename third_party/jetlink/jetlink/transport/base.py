@@ -12,10 +12,38 @@ from dataclasses import dataclass
 
 from jetlink import protocol as P
 
-# Stops a corrupt length field making RxBuffer allocate gigabytes. A frame is
-# ~460 KB.
+# Stops a corrupt length field making RxBuffer allocate gigabytes. A big
+# model's request is 393 KB.
 MAX_MESSAGE = 16 << 20
 _PAD = bytes(P.GADGET_TX_ALIGN)
+
+
+# The USB generation of each speed Linux names, as the server's link event
+# shows it. The comma's hello carries the speed (Transport.link_info), because
+# only its end always knows: a phone's cable is TCP over USB, and a host may
+# not see the bus speed. The server maps it with this (Pinned.usbSpeedMedia).
+USB_MEDIA = {'super-speed-plus': 'usb3', 'super-speed': 'usb3', 'high-speed': 'usb2',
+             'full-speed': 'usb1', 'low-speed': 'usb1'}
+UDC_SYSFS = '/sys/class/udc'
+
+
+def udc_speed(udc: str | None = None, root: str | None = None) -> str | None:
+  """The speed a device controller negotiated with its host, as Linux names it
+  (super-speed, high-speed, ...), from `udc` or the first controller; None
+  without one, or before a host has configured it."""
+  import os
+  root = root or UDC_SYSFS
+  try:
+    name = udc or sorted(os.listdir(root))[0]
+    with open(os.path.join(root, name, 'current_speed')) as f:
+      speed = f.read().strip()
+  except (OSError, IndexError):
+    return None
+  return speed if speed in USB_MEDIA else None
+
+
+def usb_link_info(kind: str, speed: str | None) -> dict:
+  return {'kind': kind, **({'usb_speed': speed} if speed else {})}
 
 
 class LinkError(IOError):
@@ -40,6 +68,12 @@ class Transport(ABC):
   Implementations must preserve message boundaries and ordering. recv() hands
   back a view into a reusable buffer: copy anything you need to keep.
   """
+
+  def link_info(self) -> dict:
+    """What the comma's hello says about this link: its kind (usb, cable or
+    tcp) and, over USB, the speed the controller negotiated. Empty when there
+    is nothing to say."""
+    return {}
 
   @abstractmethod
   def send(self, msg_type: int, seq: int, parts=(), flags: int = 0, timeout: float | None = None) -> None:
@@ -243,23 +277,6 @@ class StreamTransport(Transport):
       return -(-missing // self.packet_size) * self.packet_size
     return missing
 
-  def drain(self, timeout: float) -> None:
-    """After a desync, swallow what the peer is still sending until the link
-    drops or it goes quiet for `timeout`.
-
-    The peer is blocked mid-message. Reopening instead drains a packet per
-    session, so its frame timeout never fires and it never reconnects.
-    """
-    scratch = memoryview(bytearray(self.read_chunk))
-    last = time.monotonic()
-    while time.monotonic() - last < timeout:
-      try:
-        n = self._read_into(scratch, timeout)
-      except LinkError:
-        return
-      if n:
-        last = time.monotonic()
-
   def recv(self, timeout: float | None = None) -> Message:
     if self._desynced:
       raise LinkError("stream desynced; the link must be reopened")
@@ -272,8 +289,8 @@ class StreamTransport(Transport):
         raise P.ProtocolError(f"message claims {length} bytes, over the {MAX_MESSAGE} cap")
     except P.ProtocolError as e:
       # Nothing resynchronises a byte stream mid-message. Latch it and report a
-      # LinkError, which callers reconnect on; a ProtocolError escaping here
-      # unwinds the server's accept loop and kills the process.
+      # LinkError, which callers reconnect on and modeld answers with the
+      # small model; a ProtocolError is something no caller catches.
       self._desynced = True
       raise LinkError(f"protocol error, link unusable: {e}") from e
     # the remainder of the budget, so one recv cannot block for twice what it

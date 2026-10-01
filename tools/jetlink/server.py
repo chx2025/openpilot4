@@ -1,4 +1,10 @@
-"""Pinned upstream server with an optional, read-only Carrot HUD extension."""
+"""Pinned upstream server with an optional, read-only Carrot HUD extension.
+
+LEGACY, not updated for protocol 3: jetlink 0.7.2 deleted the Python
+`jetlink.server` package (the server is Swift's JetlinkKit now), so this file
+and the Jetson pipeline that imports it no longer run. Kept until the Jetson
+host side is migrated; the comma speaks protocol 3 to the apps.
+"""
 import os
 import json
 from pathlib import Path

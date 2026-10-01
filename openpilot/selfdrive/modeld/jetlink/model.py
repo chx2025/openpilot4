@@ -82,8 +82,11 @@ class JoiningModel:
     self.usbgpu = False
     self.vision_input_names = ['img', 'big_img']
     self.packed = np.zeros(SPEC.packed_nelem, np.float32)
-    self.views = {name: a.reshape(shape) for (name, shape), a in zip(
-      SPEC.packed_shapes.items(), np.split(self.packed, np.cumsum(SPEC.packed_sizes[:-1])), strict=True)}
+    # Protocol 3 drops prev_feat from the packed floats (the server feeds the
+    # hidden state back itself), so the layout comes from the spec's own spans
+    # rather than a cumulative split of packed_shapes.
+    self.views = {name: self.packed[span].reshape(shape)
+                  for name, (span, shape) in SPEC.packed_layout.items()}
     self.prev_desire = np.zeros(8, np.float32)
     self.frame = 0
     self.join_allowed = False
@@ -143,7 +146,10 @@ class JoiningModel:
         result = self.client.infer(images, self.packed, self.frame, self.reset, source_sof=self.source_sof)
         replied = time.monotonic()
         self.reset = False
-        self.views['prev_feat'][:] = result[SPEC.output_slices['hidden_state']]
+        # Protocol 3: the server feeds the hidden state back into its own
+        # queues, so nothing comes back to store in the packed floats. The
+        # reply still has the full output length with hidden_state zeroed,
+        # which keeps the output_slices below valid.
         if not self.active:
           cloudlog.warning('Jetlink active: Cinque v2 %s', SPEC.sha256)
           self.active = True

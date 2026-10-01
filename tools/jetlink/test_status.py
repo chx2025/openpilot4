@@ -8,9 +8,9 @@ from openpilot.common import jetlink_status as status
 @pytest.mark.parametrize(('peer', 'expected'), (
   ({'carrot_host': 'jetson'}, 'jetSON'), ({'carrot_host': 'mac'}, 'MAC'),
   ({'backend': 'trt', 'device': 'Orin-sm87'}, 'jetSON'),
-  ({'protocol': 2, 'backend': 'ort', 'device': 'coreml-Apple-M1'}, 'MAC'),
-  ({'protocol': 2, 'backend': 'ort', 'device': 'ane-Apple_M1_Pro'}, 'MAC'),
-  ({'protocol': 2, 'backend': 'ort', 'device': 'coreml-Apple_A17_Pro'}, 'Jetlink'),
+  ({'protocol': 3, 'backend': 'ort', 'device': 'coreml-Apple-M1'}, 'MAC'),
+  ({'protocol': 3, 'backend': 'ort', 'device': 'ane-Apple_M1_Pro'}, 'MAC'),
+  ({'protocol': 3, 'backend': 'ort', 'device': 'coreml-Apple_A17_Pro'}, 'Jetlink'),
   ({'backend': 'trt', 'device': 'RTX-sm89'}, 'Jetlink'),
   ({'carrot_host': 'untrusted text'}, 'Jetlink'), ({'carrot_host': []}, 'Jetlink'), (None, 'Jetlink'),
 ))

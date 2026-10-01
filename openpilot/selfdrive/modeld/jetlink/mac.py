@@ -1,4 +1,11 @@
-"""Comma-side provisioning for the unmodified upstream Mac app only."""
+"""Comma-side provisioning: hand whichever host is attached the pinned engine.
+
+Every host gets the same treatment. A server that already has an engine for the
+pinned model validates in place; one that does not is sent the ONNX, which the
+comma keeps in CACHE or downloads from MODEL_URL first. The unmodified upstream
+Mac app is the special case: its preparation waits for ignition-off and polls
+for cancellation while the app builds by itself.
+"""
 import hashlib
 import os
 from pathlib import Path
@@ -13,7 +20,10 @@ from jetlink.client import EngineMissing
 from jetlink.transport.base import LinkTimeout
 
 MODEL_URL = 'https://upload.shind0.synology.me/models/carrot-jetlink-cinque-v2/big_driving_supercombo.onnx'
-CACHE = Path('/data/models/carrot-jetlink-mac')
+CACHE = Path('/data/models/carrot-jetlink-host')
+# The same ONNX was cached here when only the Mac app could be provisioned:
+# reuse it rather than download 766 MB again.
+LEGACY_CACHE = Path('/data/models/carrot-jetlink-mac')
 
 
 class PreparationDeferred(RuntimeError):
@@ -22,9 +32,9 @@ class PreparationDeferred(RuntimeError):
 
 def require_setup(offroad, connected):
   if not connected():
-    raise PreparationDeferred('Mac disconnected; waiting for reconnection')
+    raise PreparationDeferred('Host disconnected; waiting for reconnection')
   if not offroad():
-    raise PreparationDeferred('Mac model setup requires ignition off')
+    raise PreparationDeferred('Model setup requires ignition off')
 
 
 def model_file(offroad, connected, progress, cache=CACHE):
@@ -32,41 +42,43 @@ def model_file(offroad, connected, progress, cache=CACHE):
   deadline = time.monotonic() + 1800
   cache.mkdir(parents=True, exist_ok=True)
   target = cache / (SPEC.sha256 + '.onnx')
-  if target.is_file() and target.stat().st_size == SPEC.nbytes:
+  for existing in (target, LEGACY_CACHE / (SPEC.sha256 + '.onnx')):
+    if not existing.is_file() or existing.stat().st_size != SPEC.nbytes:
+      continue
     value = hashlib.sha256()
-    with target.open('rb') as stream:
+    with existing.open('rb') as stream:
       for block in iter(lambda: stream.read(4 << 20), b''):
         require_setup(offroad, connected)
         value.update(block)
-        progress('verify', 0., 'Checking cached Mac model')
+        progress('verify', 0., 'Checking cached host model')
     if value.hexdigest() == SPEC.sha256:
-      return target
+      return existing
   if shutil.disk_usage(cache).free < SPEC.nbytes + (64 << 20):
-    raise OSError('Not enough free space for the Mac model')
+    raise OSError('Not enough free space for the model')
   fd, name = tempfile.mkstemp(dir=cache, prefix='download-', suffix='.part')
   temporary = Path(name)
   try:
-    progress('download', 0., 'Downloading Cinque v2 for Mac')
+    progress('download', 0., 'Downloading Cinque v2')
     with os.fdopen(fd, 'wb') as output:
       with urllib.request.urlopen(MODEL_URL, timeout=10) as response:
         if response.geturl() != MODEL_URL:
-          raise ValueError('Unexpected Mac model download redirect')
+          raise ValueError('Unexpected model download redirect')
         count, value = 0, hashlib.sha256()
         while True:
           require_setup(offroad, connected)
           if time.monotonic() >= deadline:
-            raise TimeoutError('Mac model download exceeded 30 minutes')
+            raise TimeoutError('Model download exceeded 30 minutes')
           block = response.read(1 << 20)
           if not block:
             break
           count += len(block)
           if count > SPEC.nbytes:
-            raise ValueError('Oversized Mac model download')
+            raise ValueError('Oversized model download')
           output.write(block)
           value.update(block)
-          progress('download', count / SPEC.nbytes, 'Downloading Cinque v2 for Mac')
+          progress('download', count / SPEC.nbytes, 'Downloading Cinque v2')
       if count != SPEC.nbytes or value.hexdigest() != SPEC.sha256:
-        raise ValueError('Mac model checksum/size mismatch')
+        raise ValueError('Model checksum/size mismatch')
       require_setup(offroad, connected)
       output.flush()
       os.fsync(output.fileno())
@@ -109,10 +121,39 @@ class PreparationTransport:
         pass
 
 
-def prepare(client, peer, offroad, connected, progress, cache=CACHE):
-  """Retain the exact legacy call for every non-Mac, including all Jetsons."""
-  if not is_mac_peer(peer):
+def provision(client, offroad, connected, progress, cache=CACHE):
+  """Give the host the pinned engine, uploading our ONNX when it has none.
+
+  The quick probe keeps a host that is already prepared (a Jetson, or a phone
+  app that downloaded the model itself) on the fast path. A need_upload answer
+  means the model comes from here: the cache, or MODEL_URL when it is missing.
+  The host's build then takes minutes, so this runs offroad only and stops with
+  the link.
+  """
+  try:
     validate_spec(client.ensure_engine(SPEC.sha256, SPEC.nbytes, frame_skip=SPEC.frame_skip, build_timeout=30))
+    return
+  except EngineMissing:
+    pass
+
+  def stopped():
+    require_setup(offroad, connected)
+    return False
+
+  try:
+    path = model_file(offroad, connected, progress, cache)
+    validate_spec(client.ensure_engine(SPEC.sha256, SPEC.nbytes, onnx_path=path,
+                                       frame_skip=SPEC.frame_skip, build_timeout=1800,
+                                       should_stop=stopped, progress=progress))
+  finally:
+    client.progress_cb = None
+    client._should_stop = lambda: False
+
+
+def prepare(client, peer, offroad, connected, progress, cache=CACHE):
+  """Provision every host; the unmodified upstream Mac app keeps its own path."""
+  if not is_mac_peer(peer):
+    provision(client, offroad, connected, progress, cache)
     return
 
   # HELLO resets the upstream session's requested model, so engine_state is
