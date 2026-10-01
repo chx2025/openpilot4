@@ -29,7 +29,11 @@
   header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
   h1 { font-size: 20px; margin: 0; font-weight: 600; }
   .sub { color: var(--dim); font-size: 13px; }
-  .toolbar { margin-left: auto; display: flex; gap: 8px; }
+  .toolbar { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
+  /* A squeezed flex item shrinks below its own text and wraps one character per
+     line, which is what the toolbar used to do on a phone. Keep each control at
+     its natural width and let the row wrap instead. */
+  .toolbar > * { flex: 0 0 auto; white-space: nowrap; }
   button {
     font: inherit;
     border: 1px solid var(--line);
@@ -102,6 +106,13 @@
     white-space: nowrap;
   }
   a.back:hover { background: #273040; border-color: #384555; }
+
+  /* Phones: the toolbar drops onto its own full-width rows instead of competing
+     with the title for one line. */
+  @media (max-width: 640px) {
+    header { align-items: flex-start; }
+    .toolbar { margin-left: 0; width: 100%; justify-content: flex-start; }
+  }
 </style>
 </head>
 <body>
@@ -112,6 +123,7 @@
   <div class="toolbar">
     <button id="btnRefresh" class="mini">刷新</button>
     <a class="back" id="navEgpuLink" href="models.html" title="eGPU 大模型页">eGPU 模型 →</a>
+    <a class="back" href="/" title="返回设置主页">← 返回主页</a>
   </div>
 </header>
 

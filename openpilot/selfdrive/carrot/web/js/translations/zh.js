@@ -229,6 +229,8 @@ window.CarrotTranslations.register("zh", {
     server_state: "服务器状态",
     working: "处理中",
     quick_link: "Link",
+    models_page: "eGPU 模型",
+    jetlink_models_page: "Jetlink 模型",
     car_select: "车辆选择",
     selected_vehicle_info: "查看已选车辆",
     makers: "制造商",

@@ -29,7 +29,11 @@
   header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
   h1 { font-size: 20px; margin: 0; font-weight: 600; }
   .sub { color: var(--dim); font-size: 13px; }
-  .toolbar { margin-left: auto; display: flex; gap: 8px; }
+  .toolbar { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
+  /* A squeezed flex item shrinks below its own text and wraps one character per
+     line, which is what the toolbar used to do on a phone. Keep each control at
+     its natural width and let the row wrap instead. */
+  .toolbar > * { flex: 0 0 auto; white-space: nowrap; }
   button {
     font: inherit;
     border: 1px solid var(--line);
@@ -114,6 +118,16 @@
     white-space: nowrap;
   }
   a.back:hover { background: #273040; border-color: #384555; }
+
+  /* Phones: the toolbar drops onto its own full-width rows instead of competing
+     with the title for one line. The model-source label gets a row of its own so
+     its select can use the full width. */
+  @media (max-width: 640px) {
+    header { align-items: flex-start; }
+    .toolbar { margin-left: 0; width: 100%; justify-content: flex-start; }
+    .toolbar label { flex: 1 1 100%; }
+    .toolbar select { flex: 1 1 auto; min-width: 0; }
+  }
 </style>
 </head>
 <body>
@@ -130,9 +144,7 @@
     <button id="btnRefresh" class="mini">刷新</button>
     <!-- 同源页面（carrot web 7000）直接用相对地址即可。 -->
     <a class="back" href="jetlink_models.html" title="Jetlink 模型页">Jetlink 模型 →</a>
-    <!-- 参数页由 amapnavi 的 8088 服务提供，本页在 carrot web(7000)：用绝对地址，
-         href 在脚本里按当前主机名拼接。 -->
-    <a class="back" id="navParamsLink" href="#" title="返回 AMAPNAVI 参数页">← 返回参数页</a>
+    <a class="back" href="/" title="返回设置主页">← 返回主页</a>
   </div>
 </header>
 
@@ -483,10 +495,6 @@
   }
 
   $("btnRefresh").addEventListener("click", load);
-  // 参数页在 amapnavi 的 8088 端口，本页在 carrot web(7000)：跨端口的链接跳转不受
-  // 同源策略限制，主机名按当前访问地址拼，换设备无需改页面。
-  const navParamsLink = $("navParamsLink");
-  if (navParamsLink) navParamsLink.href = "http://" + location.hostname + ":8088/nav_params";
   load();
   setInterval(() => { load(); }, 20000);
   setInterval(refreshDownloadProgress, 2000);

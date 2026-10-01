@@ -238,6 +238,8 @@ window.CarrotTranslations.register("en", {
     server_state: "Server Status",
     working: "Working",
     quick_link: "Link",
+    models_page: "eGPU Models",
+    jetlink_models_page: "Jetlink Models",
     car_select: "Car Select",
     selected_vehicle_info: "Show selected vehicle",
     makers: "Makers",

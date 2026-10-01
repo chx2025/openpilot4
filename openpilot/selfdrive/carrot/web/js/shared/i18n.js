@@ -250,6 +250,8 @@ function renderUIText() {
   setText("userSystemTitle", getUIText("user_system", "User / System"));
   setText("toolsQuickLinkTitle", getUIText("quick_link", "Link"));
   setText("userSettingsTitle", getUIText("section_settings_backup", "Settings"));
+  setText("btnToolsModelsPage", getUIText("models_page", "eGPU Models"));
+  setText("btnToolsJetlinkModelsPage", getUIText("jetlink_models_page", "Jetlink Models"));
   setText("btnToolsCarSelect", getUIText("car_select", "Car Select"));
   setText("btnToolsLanguage", getUIText("language", "Language"));
   setText("btnToolsWebSettings", getUIText("web_settings", "Web Settings"));
