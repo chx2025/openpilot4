@@ -2003,8 +2003,7 @@
       "default": 1,
       "unit": 1,
       "control": "toggle",
-      "risk": "high",
-      "search_only": true
+      "risk": "high"
     },
     {
       "group": "시작",
