@@ -123,7 +123,10 @@
   一个模型就是一份 SPEC：里面的 sha256 决定了设备与主机两侧的缓存文件名，主机也会为它重建引擎。
   所以<b>切换模型 = 重新下载 ONNX（约 766 MB）+ 主机重建</b>，没有更省的办法。<br>
   <b>只能在停车熄火（offroad）时切换</b>，切换后需要重启设备才会生效；ONNX 会在下次连上主机时由
-  comma 自己下载或从已有缓存上传。缓存在 <code>/data/models/carrot-jetlink-host/</code>，
+  comma 自己下载或从已有缓存上传。<br>
+  <b>ONNX 和大模型（eGPU）共用</b>：若 <code>/data/media/0/carrot/models/</code> 里已有同 sha256
+  的文件就直接用它，不会再下载一份；只有那里没有时才存到
+  <code>/data/models/carrot-jetlink-host/</code>（该目录的文件可在此页删除，借用的不会被删）。
   当前选择记在 <code>/data/models/carrot-jetlink/index.json</code>。<br>
   带 <code>内置</code> 徽章的是本分支随仓发布的模型；其余来自服务器目录
   <code>&lt;MODEL_BASE&gt;/jetlink/catalog.json</code>。
@@ -202,7 +205,9 @@
       use.addEventListener("click", () => selectModel(model, use));
       actions.appendChild(use);
     }
-    if (model.downloaded && !model.selected && !model.running) {
+    // Nothing to delete when the file is the eGPU picker's: it is borrowed, and
+    // removing it here would be a no-op the user could not tell from a failure.
+    if (model.downloaded && !model.shared && !model.selected && !model.running) {
       const del = document.createElement("button");
       del.textContent = "删除";
       del.className = "danger mini";
@@ -223,7 +228,8 @@
     };
     if (model.running) add("当前使用中", "on");
     if (model.selected && !model.running) add("已选择 · 待重启", "sel");
-    add(model.downloaded ? "已下载" : "未下载", model.downloaded ? "ok" : "miss");
+    if (model.shared) add("复用 eGPU 缓存", "ok");
+    else add(model.downloaded ? "已下载" : "未下载", model.downloaded ? "ok" : "miss");
     if (model.builtin) add("内置", "on");
     if (model.frame_skip) add("frame_skip " + model.frame_skip);
     el.appendChild(badges);

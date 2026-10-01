@@ -77,6 +77,9 @@ def build_payload() -> dict[str, Any]:
       'builtin': bool(item.get('builtin')),
       'frame_skip': spec.get('frame_skip'),
       'downloaded': models.downloaded(sha, refresh=False),
+      # Present, but only because the eGPU cache holds the same file. Worth
+      # saying out loud: there is nothing here for the user to delete.
+      'shared': models.shared_only(sha, refresh=False),
       'selected': sha == selected,
       # What the running daemon actually loaded, which differs from `selected`
       # until the reboot that a switch needs.

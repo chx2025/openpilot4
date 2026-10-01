@@ -37,6 +37,13 @@ INDEX = Path('/data/models/carrot-jetlink/index.json')
 CATALOG_PATH = 'jetlink/catalog.json'
 REMOTE_TIMEOUT = 6.0
 
+# The eGPU picker keeps big models in its own cache, under a shorter name
+# (big_driving_supercombo-<sha16>.onnx). The pinned checkpoints are the same
+# files - same sha256 - so a copy found there is uploaded as-is instead of being
+# downloaded and stored a second time. Borrowed files are only ever read: they
+# belong to the eGPU picker, so remove() leaves them alone.
+SHARED_CACHE_FALLBACK = Path('/data/media/0/carrot/models')
+
 # Resolved on first use; see selected_entry().
 _RESOLVED: dict | None = None
 
@@ -225,15 +232,46 @@ def model_nbytes(refresh: bool = True) -> int | None:
   return size if isinstance(size, int) and size > 0 else None
 
 
+def _shared_cache() -> Path:
+  """Where the eGPU picker keeps its models; imported lazily (heavy module)."""
+  try:
+    from openpilot.selfdrive.modeld.big_model import model_cache_dir
+    return Path(model_cache_dir())
+  except Exception:
+    return SHARED_CACHE_FALLBACK
+
+
+def owned_paths(sha256: str) -> list[Path]:
+  """Copies this module may create, and may therefore delete."""
+  return [root / f'{sha256}.onnx' for root in (CACHE, LEGACY_CACHE)]
+
+
+def shared_paths(sha256: str) -> list[Path]:
+  """Copies the eGPU picker happens to hold. Read-only: not ours to delete."""
+  try:
+    return [path for path in _shared_cache().glob(f'*-{sha256[:16]}.onnx') if path.is_file()]
+  except OSError:
+    return []
+
+
 def cached_paths(sha256: str | None = None, refresh: bool = True) -> list[Path]:
+  """Every place this model may already be: ours first, then the shared cache."""
   sha = sha256 or selected_sha(refresh)
   if not isinstance(sha, str):
     return []
-  return [root / f'{sha}.onnx' for root in (CACHE, LEGACY_CACHE)]
+  return owned_paths(sha) + shared_paths(sha)
 
 
 def downloaded(sha256: str | None = None, refresh: bool = True) -> bool:
   return any(path.is_file() for path in cached_paths(sha256, refresh))
+
+
+def shared_only(sha256: str | None = None, refresh: bool = True) -> bool:
+  """True when the model is here only because the eGPU cache holds it."""
+  sha = sha256 or selected_sha(refresh)
+  if not isinstance(sha, str):
+    return False
+  return not any(path.is_file() for path in owned_paths(sha)) and bool(shared_paths(sha))
 
 
 def select(sha256: str) -> bool:
@@ -243,11 +281,14 @@ def select(sha256: str) -> bool:
 
 
 def remove(sha256: str) -> bool:
-  """Drop a cached ONNX. Refuses the model in use: its SPEC names the file."""
+  """Drop our own cached ONNX; a shared eGPU copy is left where it is.
+
+  Refuses the model in use, whose SPEC names the file this would delete.
+  """
   if sha256 == selected_sha():
     return False
   removed = False
-  for path in cached_paths(sha256):
+  for path in owned_paths(sha256):
     try:
       path.unlink()
       removed = True

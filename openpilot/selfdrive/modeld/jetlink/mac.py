@@ -17,7 +17,7 @@ import urllib.request
 
 from openpilot.common.jetlink_peer import is_mac_peer
 from openpilot.selfdrive.modeld.jetlink.link import SPEC, validate_spec
-from openpilot.selfdrive.modeld.jetlink.models import CACHE, LEGACY_CACHE, label, model_url
+from openpilot.selfdrive.modeld.jetlink.models import CACHE, cached_paths, label, model_url
 from jetlink.client import EngineMissing
 from jetlink.transport.base import LinkTimeout
 
@@ -38,7 +38,9 @@ def model_file(offroad, connected, progress, cache=CACHE):
   deadline = time.monotonic() + 1800
   cache.mkdir(parents=True, exist_ok=True)
   target = cache / (SPEC.sha256 + '.onnx')
-  for existing in (target, LEGACY_CACHE / (SPEC.sha256 + '.onnx')):
+  # Every verified copy counts, including one the eGPU cache already holds: the
+  # point is to hand the host the model, not to own a second copy of it.
+  for existing in cached_paths(SPEC.sha256):
     if not existing.is_file() or existing.stat().st_size != SPEC.nbytes:
       continue
     value = hashlib.sha256()
