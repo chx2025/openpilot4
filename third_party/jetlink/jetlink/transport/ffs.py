@@ -53,7 +53,13 @@ EP_IN = 0x82   # device -> host
 # in ffs_epfile_read_iter stalled replies 100-300 ms, and order-2 does not fail.
 # Do not go smaller to dodge the rare slow success: one page per read is ~19
 # syscalls for a 74 KB reply and cost ~6 ms a frame.
-READ_CHUNK = 16 * P.USB_MAX_PACKET
+#
+# A reply is 72 KB (the 18452-float output), so order-2 needs five reads and
+# order-3 needs three. The stall above is a failure of the *allocation*; when it
+# does happen the read raises ENOMEM and _shrink() halves this to the 16 KB floor,
+# which the same comment records as safe - so trying the larger size cannot cost
+# the link, only a few frames while it settles.
+READ_CHUNK = 32 * P.USB_MAX_PACKET
 # How much the reader may queue before it stops. Only bounds memory if the
 # consumer stalls: inference never needs more than one response.
 MAX_QUEUED = 8 << 20
