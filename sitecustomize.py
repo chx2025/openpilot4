@@ -15,6 +15,20 @@ See openpilot/selfdrive/modeld/egpu_patches.py for what is applied and why.
 """
 
 import os
+import sys
+
+# --- agnos tool bridge -------------------------------------------------------
+# /etc/profile sets PYTHONPATH=/data/pythonpath (a symlink to this checkout), which
+# exposes the openpilot tree but NOT its vendored dependencies. launch_chffrplus.sh
+# adds "$DIR/pydeps" itself, so openpilot works -- but agnos' own tools do not go
+# through that script. /usr/comma/comma.sh runs /usr/comma/reset directly, so the
+# factory-reset UI loaded this tree (openpilot/system/hardware/tici/hardware.py ->
+# lpa.py) and died with "No module named 'serial'", leaving reset unable to start.
+# Appending (never prepending) preserves normal resolution order and only supplies
+# packages that would otherwise be missing.
+_PYDEPS = "/data/openpilot/pydeps"
+if os.path.isdir(_PYDEPS) and _PYDEPS not in sys.path:
+  sys.path.append(_PYDEPS)
 
 if os.environ.get("OPENPILOT_EGPU_PATCH", "1") != "0":
   try:
