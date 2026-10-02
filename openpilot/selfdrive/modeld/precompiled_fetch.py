@@ -12,6 +12,15 @@ import json
 import sys
 from pathlib import Path
 
+# Boot starts this downloader before DNS is necessarily up. The launcher's own network wait
+# covers the manifest host only, while the precompiled catalog is served from the model host
+# (manifest.url). A cold boot can therefore resolve one and not the other, and the fetch used
+# to be deferred to the next boot - a delivery the user explicitly selected must not ride on
+# one DNS hiccup. Wait for the host we are about to talk to, and retry a few times.
+CATALOG_WAIT_SECONDS = 90.0
+FETCH_ATTEMPTS = 3
+FETCH_RETRY_DELAY = 20.0
+
 # Touched once the download is complete, and read by the HUD badge to show
 # "REBOOT". /tmp is a tmpfs: a reboot (or power loss) wipes it, so the prompt
 # disappears on its own. Timestamps cannot be used for this - the clock is
@@ -175,10 +184,63 @@ def _precompiled_rejected(manifest) -> bool:
     return False
 
 
+def _wait_for_host(url: str, timeout: float) -> bool:
+  """Bounded wait until the host behind `url` resolves and accepts connections."""
+  if not url:
+    return False
+  try:
+    from openpilot.selfdrive.modeld.big_model import wait_for_manifest_network
+    return bool(wait_for_manifest_network(url, timeout))
+  except Exception:
+    return False
+
+
+def precompiled_required(manifest) -> bool:
+  """Can only the precompiled artifact satisfy the current selection?
+
+  Either the user pinned the precompiled delivery, or the model is a generic PKL: the
+  precompiled artifact *is* the model file then, with no ONNX to compile locally and no
+  chunked set to split. Both mean the boot cannot call itself "ready" while it is missing.
+  """
+  if bool(getattr(manifest, 'precompiled_only', False)):
+    return True
+  try:
+    from openpilot.selfdrive.modeld.chunked_model import read_model_source
+    return read_model_source() == 'precompiled'
+  except Exception:
+    return False
+
+
+def _ensure_precompiled_with_retry(manifest, progress):
+  """ensure_precompiled() with a host wait and bounded retries; raises on failure."""
+  from urllib.parse import urljoin
+
+  from openpilot.selfdrive.modeld.precompiled_model import ensure_precompiled
+
+  try:
+    catalog_url = urljoin(manifest.url, 'precompiled.json')
+  except Exception:
+    catalog_url = ''
+  _wait_for_host(catalog_url, CATALOG_WAIT_SECONDS)
+  last_error = None
+  for attempt in range(1, FETCH_ATTEMPTS + 1):
+    try:
+      return ensure_precompiled(manifest, progress=progress)
+    except Exception as exc:
+      last_error = exc
+      print(f"precompiled model fetch failed ({attempt}/{FETCH_ATTEMPTS}): {exc}", file=sys.stderr)
+      if attempt < FETCH_ATTEMPTS:
+        _wait_for_host(catalog_url, FETCH_RETRY_DELAY)
+  raise OSError(f"precompiled model unavailable after {FETCH_ATTEMPTS} attempts: {last_error}")
+
+
 def fetch_after_onnx(manifest, reporter) -> None:
   """Download the big-model artifacts for `manifest`, reporting progress.
 
-  Never raises: a failure here must not prevent the normal internal-GPU build.
+  Never raises for an optional delivery: a failure there must not prevent the normal
+  internal-GPU build. A delivery the user selected (pinned precompiled/chunked, or a
+  precompiled-only model) does raise, because the launcher retries this downloader only
+  while status.json says "error" - see the callers in launch_chffrplus.sh.
 
   Both deliveries download here, in the background, for the same reason: the boot build
   must not sit on a multi-minute download, and the HUD/web pages get their progress from
@@ -211,6 +273,11 @@ def fetch_after_onnx(manifest, reporter) -> None:
       newly_installed = fetched_chunked and not was_installed
   except Exception as exc:
     print(f"chunked model fetch deferred: {exc}", file=sys.stderr)
+    if source == "chunked" and not only_precompiled:
+      # A pinned delivery that did not land has to be visible: the launcher retries this
+      # downloader only while status.json says "error". "auto" keeps the local-compiler
+      # fallback and therefore stays a silent deferral, as before.
+      raise RuntimeError(f"chunked model fetch failed: {exc}") from exc
 
   if fetched_chunked:
     # Steer the (untouched) resolution to the chunked set and prompt for the reboot that
@@ -226,10 +293,12 @@ def fetch_after_onnx(manifest, reporter) -> None:
     return  # the user pinned this delivery; the boot build falls back to the local compile
   if only_precompiled and _precompiled_rejected(manifest):
     # Say why instead of leaving the HUD on "ready": there is nothing to fetch, and
-    # ensure_precompiled() would skip the download for the same reason.
+    # ensure_precompiled() would skip the download for the same reason. The caller turns
+    # this into status.json's "error" (and its own message says the same), which is what
+    # makes the pages show the reason instead of a silent "ready".
     reporter.update("error", model_id=manifest.model_id, sha256=manifest.sha256,
                     detail="precompiled runtime was rejected on this device")
-    return
+    raise RuntimeError('precompiled runtime was rejected on this device')
   if source == "precompiled":
     # The user pinned this delivery: drop the marker that makes ensure_precompiled() skip the
     # download. Without this the pin resolves to the chunked set that is already installed
@@ -251,7 +320,6 @@ def fetch_after_onnx(manifest, reporter) -> None:
 
   try:
     from openpilot.selfdrive.modeld.firmware import ensure_firmware
-    from openpilot.selfdrive.modeld.precompiled_model import ensure_precompiled
 
     def precompiled_progress(done, total) -> None:
       # detail="pkl" is what the HUD badge keys off to label this phase "PKL"
@@ -264,7 +332,11 @@ def fetch_after_onnx(manifest, reporter) -> None:
     # Upstream's ensure_precompiled used to fetch it; this fork keeps the call in
     # this fork-only module so precompiled_model.py stays upstream's file.
     ensure_firmware(manifest)
-    ensure_precompiled(manifest, progress=precompiled_progress)
+    installed = _ensure_precompiled_with_retry(manifest, precompiled_progress)
+    if installed is None and precompiled_required(manifest):
+      # ensure_precompiled() declines while the artifact being served is the very one this
+      # device rejected earlier; name that instead of leaving the pages on "ready".
+      raise OSError('precompiled artifact is rejected on this device')
     # The runtime is extracted by now; teach it where the firmware lives.
     patch_runtime_firmware_paths(manifest)
     try:
@@ -272,4 +344,11 @@ def fetch_after_onnx(manifest, reporter) -> None:
     except Exception:
       pass  # purely cosmetic; never fail over a flag file
   except Exception as exc:
+    # The launcher retries this downloader only while status.json says "error"
+    # (launch_chffrplus.sh: big_model_update_failed), and the HUD/web pages take the reason
+    # from the same file. An optional delivery stays a silent deferral; one the user
+    # selected must be reported, or "I picked the precompiled package" ends up as "nothing
+    # ever downloaded until the next boot" - which is exactly what this used to do.
+    if precompiled_required(manifest):
+      raise RuntimeError(f"precompiled model fetch failed: {exc}") from exc
     print(f"precompiled model fetch deferred: {exc}", file=sys.stderr)
