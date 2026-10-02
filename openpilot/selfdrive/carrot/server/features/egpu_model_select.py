@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from urllib.request import Request, urlopen
 
 from aiohttp import web
 
+from openpilot.common.basedir import BASEDIR
 from openpilot.common.file_chunker import get_manifest_path
 from openpilot.selfdrive.modeld import chunked_model, helpers, model_catalog
 from openpilot.selfdrive.modeld.big_model import active_manifest, model_cache_dir
@@ -39,6 +41,77 @@ from ..services.params import HAS_PARAMS, Params
 
 CATALOG_PATH = 'models/catalog.json'
 REMOTE_TIMEOUT = 6.0
+
+# The boot launcher starts this downloader (launch_chffrplus.sh: run_big_model_update) and
+# looks for the same marker. The page reuses it so picking a model downloads it right away
+# instead of waiting for the next boot - where the very first attempt can run before DNS is
+# up, and a single unresolvable host used to defer the fetch for a whole boot cycle.
+DOWNLOAD_LOG = '/tmp/big_model_update.log'
+DOWNLOADER_MARKER = '--ensure-if-egpu'
+
+
+def _downloader_running() -> bool:
+  """Is the background big-model downloader already alive?
+
+  Scans /proc for the same command line marker the launcher and the HUD badge use, so the
+  web server never forks a helper process just to answer this.
+  """
+  try:
+    for entry in os.listdir('/proc'):
+      if not entry.isdigit():
+        continue
+      try:
+        with open(f'/proc/{entry}/cmdline', 'rb') as handle:
+          cmdline = handle.read().decode('utf-8', 'replace')
+      except OSError:
+        continue
+      if 'openpilot.selfdrive.modeld.big_model' in cmdline and DOWNLOADER_MARKER in cmdline:
+        return True
+  except OSError:
+    pass
+  return False
+
+
+def start_model_download() -> bool:
+  """Start the background downloader now; True when one is running.
+
+  Picking a model (or a delivery) is the user asking for that artifact, so the page drives
+  the download instead of leaving it to the next boot. The downloader decides what is still
+  missing, retries transient failures itself and reports through status.json, which the page
+  already polls through /api/egpu/model. It is detached and never blocks the request.
+  """
+  if _downloader_running():
+    return True
+  try:
+    env = dict(os.environ, PYTHONUNBUFFERED='1')
+    if not env.get('PYTHONPATH'):
+      env['PYTHONPATH'] = os.pathsep.join(path for path in sys.path if path)
+    with open(DOWNLOAD_LOG, 'ab') as log:
+      subprocess.Popen(
+        [sys.executable, '-m', 'openpilot.selfdrive.modeld.big_model',
+         DOWNLOADER_MARKER, '--network-wait-seconds', '60'],
+        cwd=BASEDIR, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+        env=env, start_new_session=True,
+      )
+    return True
+  except Exception:
+    return False
+
+
+def _download_pending(sha: str | None) -> bool:
+  """Does the pinned delivery for `sha` still need a transfer?
+
+  Either the model file itself is missing, or the pinned precompiled delivery has no
+  installed artifact yet (the ONNX alone does not satisfy that pin).
+  """
+  if not isinstance(sha, str) or len(sha) != 64:
+    return False
+  try:
+    if not any(path.is_file() for path in _cached_model_files(model_cache_dir(), sha)):
+      return True
+    return chunked_model.read_model_source() == 'precompiled' and not _precompiled_state(sha)['installed']
+  except Exception:
+    return False
 
 
 def _remote_catalog() -> dict[str, Any] | None:
@@ -302,13 +375,20 @@ async def api_select(request: web.Request) -> web.Response:
   if not model_catalog.select(sha):
     return web.json_response({'ok': False, 'error': 'unknown model'}, status=404)
 
-  reboot = bool(body.get('reboot'))
+  # Drive the download from the picker itself: the boot downloader's first attempt can run
+  # before DNS is up, and a deferred fetch stayed invisible until the next boot.
+  pending = _download_pending(sha)
+  started = start_model_download() if pending else False
+  # Rebooting while the artifact is still missing would only abort the transfer, so it waits
+  # for the download; the page shows the progress and offers the restart afterwards.
+  reboot = bool(body.get('reboot')) and not pending
   if reboot and HAS_PARAMS and Params is not None:
     try:
       Params().put_bool('DoReboot', True)
     except Exception:
       reboot = False
-  return web.json_response({'ok': True, 'selected': sha, 'reboot_requested': reboot})
+  return web.json_response({'ok': True, 'selected': sha, 'reboot_requested': reboot,
+                            'download_started': started, 'download_pending': pending})
 
 
 async def api_remove(request: web.Request) -> web.Response:
@@ -385,7 +465,12 @@ async def api_source(request: web.Request) -> web.Response:
     return web.json_response({'ok': False, 'error': str(exc)}, status=400)
   except OSError as exc:
     return web.json_response({'ok': False, 'error': str(exc)}, status=500)
-  return web.json_response({'ok': True, 'source': source})
+  # Changing the delivery is the same promise as picking a model: fetch whatever that pin
+  # still needs (a pinned precompiled package, typically) without waiting for a reboot.
+  pending = _download_pending(model_catalog.selected_sha())
+  started = start_model_download() if pending else False
+  return web.json_response({'ok': True, 'source': source,
+                            'download_started': started, 'download_pending': pending})
 
 
 async def api_precompiled_retry(request: web.Request) -> web.Response:
@@ -394,8 +479,9 @@ async def api_precompiled_retry(request: web.Request) -> web.Response:
   precompiled_model.reject() latches a permanent boot-validation failure into
   precompiled/<sha>/rejected, and ensure_precompiled() then skips that artifact for as long as
   the marker matches the served pickle. Clearing it is the only way back to the precompiled
-  delivery for that model. It takes effect on the next boot (modeld resolves the artifact once,
-  at startup), so this never reboots on its own - the page asks the user to restart.
+  delivery for that model, so this also starts the download right away (the artifact is
+  usually still missing at this point) and asks for a restart only once it is installed -
+  modeld resolves the artifact once, at startup.
   """
   try:
     body = await request.json()
@@ -413,7 +499,10 @@ async def api_precompiled_retry(request: web.Request) -> web.Response:
     marker.unlink(missing_ok=True)
   except OSError as exc:
     return web.json_response({'ok': False, 'error': str(exc)}, status=500)
-  return web.json_response({'ok': True, 'sha256': sha, 'cleared': cleared, 'reboot_required': True})
+  started = start_model_download()
+  installed = bool(_precompiled_state(sha)['installed'])
+  return web.json_response({'ok': True, 'sha256': sha, 'cleared': cleared,
+                            'download_started': started, 'reboot_required': installed})
 
 
 def register(app: web.Application) -> None:
