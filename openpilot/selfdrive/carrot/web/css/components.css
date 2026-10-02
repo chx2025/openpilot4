@@ -269,6 +269,14 @@
   font-weight: 850;
 }
 
+/* Anchors styled as buttons must not show the browser's default underline.
+   The tools grid renders the model pages as <a class="btn"> (eGPU Models /
+   Jetlink Models), which otherwise picks up text-decoration: underline. */
+a.btn,
+a.smallBtn {
+  text-decoration: none;
+}
+
 /* ── Action Grid (settings/tools/log-style command groups) ── */
 .ui-action-grid {
   --ui-action-min: 124px;
