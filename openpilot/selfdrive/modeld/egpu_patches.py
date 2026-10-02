@@ -182,31 +182,43 @@ def patch_record_failure(precompiled_model) -> bool:
 
 
 def patch_model_delivery(helpers) -> bool:
-  """Make upstream's artifact resolution honour a pinned precompiled delivery.
+  """Make upstream's artifact resolution honour the pinned delivery in both directions.
 
-  helpers.py is upstream's file, so the pin is applied here instead of in it. The chunked
-  side needs no patch: chunked_model owns the pin and its `rejected` marker already makes
-  `precompiled_model.installed()` return None, which is what steers upstream's
-  "precompiled first, chunked second" resolution towards the chunked artifact.
+  helpers.py is upstream's file, so the pin is applied here instead of in it. Upstream
+  resolves "precompiled first, chunked second", which on its own honours neither pin:
 
-  What the marker cannot express is the opposite direction: with no marker and no
-  precompiled artifact, upstream falls through to the chunked artifact that is on disk, so
-  a pinned precompiled package was substituted silently. Under that pin the two functions
-  below answer for the precompiled artifact only - None and "pending" while it is absent -
-  which is what lets the web UI and the HUD explain the mismatch instead of hiding it.
-  Every other pin keeps upstream's logic untouched.
+  * pinned precompiled: the chunked set is usually on disk too, so upstream fell through to
+    it and substituted it silently. Under this pin the two functions below answer for the
+    precompiled artifact only - None and "pending" while it is absent - which is what lets
+    the web UI and the HUD explain the mismatch instead of hiding it.
+  * pinned chunked: an installed precompiled package wins upstream, and the `rejected`
+    marker that would make `precompiled_model.installed()` return None only appears after a
+    failed boot - nothing creates it for a chunked pin. So the chunked artifact is preferred
+    here whenever it is installed, and a missing one is reported as pending instead of
+    being silently served from the precompiled package.
+
+  `auto` is documented as "chunked first, precompiled when there is none", so it takes the
+  same preference and only differs by falling back. A precompiled-only model (a generic
+  PKL) has no chunked set to pick, so it keeps upstream's answer under every pin.
   """
   if getattr(helpers, "_fork_model_delivery", False):
     return False
   original_active = helpers.active_usbgpu_compiled_path
   original_pending = helpers.usbgpu_compile_pending
 
-  def pinned_precompiled():
-    """(model, installed artifact) while the precompiled delivery is pinned, else (None, None)."""
+  def pinned_source():
+    """The configured delivery pin, or 'auto' when it cannot be read."""
     try:
       from openpilot.selfdrive.modeld.chunked_model import read_model_source
-      if read_model_source() != "precompiled":
-        return None, None
+      return read_model_source()
+    except Exception:
+      return "auto"
+
+  def pinned_precompiled():
+    """(model, installed artifact) while the precompiled delivery is pinned, else (None, None)."""
+    if pinned_source() != "precompiled":
+      return None, None
+    try:
       from openpilot.selfdrive.modeld.precompiled_model import installed
     except Exception:
       return None, None
@@ -218,11 +230,36 @@ def patch_model_delivery(helpers) -> bool:
     except Exception:
       return None, None
 
+  def chunked_artifact(model):
+    """The installed chunked artifact for `model`, or None when its set is missing."""
+    if model is None or model.precompiled_only:
+      return None
+    try:
+      from openpilot.common.file_chunker import get_manifest_path
+      path = helpers.modeld_pkl_path(usbgpu=True, model_sha256=model.sha256)
+      return path if pathlib.Path(get_manifest_path(path)).is_file() else None
+    except Exception:
+      return None
+
   def active_usbgpu_compiled_path():
+    if pinned_source() != "precompiled":
+      # 'auto' and 'chunked' both want the chunked artifact first; only the answer for a
+      # missing set differs, and a precompiled-only model has no chunked set either way.
+      model = helpers.active_manifest()
+      if model is not None and not model.precompiled_only:
+        chunked = chunked_artifact(model)
+        if chunked is not None:
+          return chunked
+        if pinned_source() == "chunked":
+          return None  # pinned to chunked and not built yet: never substitute precompiled
     model, precompiled = pinned_precompiled()
     return precompiled if model is not None else original_active()
 
   def usbgpu_compile_pending():
+    if pinned_source() == "chunked":
+      model = helpers.active_manifest()
+      if model is not None and not model.precompiled_only and chunked_artifact(model) is None:
+        return True  # the boot build still has to produce it, so nothing usable is here yet
     model, precompiled = pinned_precompiled()
     return precompiled is None if model is not None else original_pending()
 

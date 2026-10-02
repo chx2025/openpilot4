@@ -126,6 +126,58 @@ def test_a_pinned_precompiled_delivery_is_not_substituted(monkeypatch, tmp_path)
   assert helpers.active_usbgpu_compiled_path() == chunked_pkl
 
 
+def test_a_pinned_chunked_delivery_beats_an_installed_precompiled_package(monkeypatch, tmp_path):
+  """Pinning the chunked set must win over an installed precompiled package.
+
+  Upstream resolves "precompiled first, chunked second", and the precompiled `rejected`
+  marker that would steer it towards the chunked artifact only appears after a failed boot -
+  nothing creates it for a chunked pin. So the pin used to be ignored whenever a precompiled
+  package happened to be installed, which is the common case after a first download.
+  """
+  from openpilot.selfdrive.modeld import chunked_model, helpers, precompiled_model
+
+  monkeypatch.setattr(helpers, "active_usbgpu_compiled_path", helpers.active_usbgpu_compiled_path)
+  monkeypatch.setattr(helpers, "usbgpu_compile_pending", helpers.usbgpu_compile_pending)
+  monkeypatch.delattr(helpers, "_fork_model_delivery", raising=False)
+  assert egpu_patches.patch_model_delivery(helpers) is True
+  assert egpu_patches.patch_model_delivery(helpers) is False  # idempotent
+
+  model = types.SimpleNamespace(sha256="b" * 64, precompiled_only=False)
+  monkeypatch.setattr(helpers, "active_manifest", lambda: model)
+  monkeypatch.setattr(chunked_model, "read_model_source", lambda *_args, **_kwargs: "chunked")
+
+  precompiled_pkl = tmp_path / "precompiled" / "model.pkl"
+  monkeypatch.setattr(precompiled_model, "installed", lambda *_args, **_kwargs: precompiled_pkl)
+  chunked_pkl = tmp_path / "big_driving_tinygrad.pkl"
+  manifest = Path(helpers.get_manifest_path(chunked_pkl))
+  manifest.parent.mkdir(parents=True, exist_ok=True)
+  manifest.write_text("1")
+  monkeypatch.setattr(helpers, "modeld_pkl_path", lambda **_kwargs: chunked_pkl)
+
+  # Chunked set installed: the pin beats the installed precompiled package.
+  assert helpers.active_usbgpu_compiled_path() == chunked_pkl
+  assert not helpers.usbgpu_compile_pending()
+
+  # Pinned but not built yet: pending, and never the precompiled package.
+  missing = tmp_path / "missing.pkl"
+  monkeypatch.setattr(helpers, "modeld_pkl_path", lambda **_kwargs: missing)
+  assert helpers.active_usbgpu_compiled_path() is None
+  assert helpers.usbgpu_compile_pending()
+
+  # auto prefers the chunked set as well, and falls back to precompiled when it is gone.
+  monkeypatch.setattr(chunked_model, "read_model_source", lambda *_args, **_kwargs: "auto")
+  monkeypatch.setattr(helpers, "modeld_pkl_path", lambda **_kwargs: chunked_pkl)
+  assert helpers.active_usbgpu_compiled_path() == chunked_pkl
+  monkeypatch.setattr(helpers, "modeld_pkl_path", lambda **_kwargs: missing)
+  assert helpers.active_usbgpu_compiled_path() == precompiled_pkl
+
+  # A precompiled-only model has no chunked set, so every pin keeps upstream's answer.
+  only_pkl = types.SimpleNamespace(sha256="c" * 64, precompiled_only=True)
+  monkeypatch.setattr(helpers, "active_manifest", lambda: only_pkl)
+  monkeypatch.setattr(chunked_model, "read_model_source", lambda *_args, **_kwargs: "chunked")
+  assert helpers.active_usbgpu_compiled_path() == precompiled_pkl
+
+
 def test_patch_after_import_runs_once_at_import(monkeypatch, tmp_path):
   (tmp_path / "stub_late_module.py").write_text("VALUE = 41\n")
   monkeypatch.syspath_prepend(str(tmp_path))
