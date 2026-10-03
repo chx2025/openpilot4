@@ -355,26 +355,13 @@
             cursor: pointer;
             font-size: 12px;
             margin-left: 6px;
+            /* Applied to <a class="expand-btn"> too: the carrot-web shortcut below
+               is an anchor, which would otherwise inherit the default underline. */
+            text-decoration: none;
         }
 
         .expand-btn:first-child {
             margin-left: 0;
-        }
-
-        .model-link {
-            display: inline-block;
-            margin-top: 4px;
-            padding: 6px 12px;
-            border: 1px solid #4CAF50;
-            border-radius: 5px;
-            color: #4CAF50;
-            text-decoration: none;
-            font-size: clamp(0.75rem, 3vw, 0.9rem);
-        }
-
-        .model-link:active,
-        .model-link:hover {
-            background: rgba(76, 175, 80, 0.15);
         }
 
         .subgroup {
@@ -451,9 +438,6 @@
         <div class="header">
             <h1>⚙️ AMAPNAVI 参数设置</h1>
             <p>根据参数下面的说明设置适合的值</p>
-            <!-- 模型选择页由 carrot web 提供(端口 7000)，本页在 8088，因此用绝对地址；
-                 href 在脚本里按当前主机名拼接，避免换设备后还要改页面。 -->
-            <a class="model-link" id="egpu-model-link" href="#" target="_blank" rel="noopener">🧠 eGPU 大模型选择</a>
         </div>
 
         <div class="search-container">
@@ -471,6 +455,9 @@
             >
             <button class="expand-btn" id="expand-all-btn">展开参数</button>
             <button class="expand-btn" id="collapse-all-btn" style="display:none;">折叠所有参数</button>
+            <!-- Carrot web (port 7000) is served on the same device: the href is filled
+                 in from location.hostname so it works whatever the device address is. -->
+            <a class="expand-btn" id="navCarrotWeb" href="#" title="打开 carrot 设置页">carrot 设置页</a>
         </div>
 
         <div class="params-container" id="params-container">
@@ -1537,6 +1524,11 @@
             xhr.send(JSON.stringify(data));
         }
 
+        // carrot web (7000) lives on the same device: build the link from the current
+        // hostname so it keeps working when the device address changes.
+        const navCarrotWeb = document.getElementById('navCarrotWeb');
+        if (navCarrotWeb) navCarrotWeb.href = "http://" + window.location.hostname + ":7000/";
+
         // 页面加载完成后初始化
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', loadNavParams);
@@ -1544,14 +1536,6 @@
             loadNavParams();
         }
 		document.getElementById('nav_params-ip').textContent = window.location.hostname;
-
-        // 模型选择页由 carrot web 提供(默认端口 7000)，与本页(8088)不同端口，
-        // 因此用绝对地址；链接跳转不受同源策略限制，页面内的 /api/egpu/* 调用在
-        // 7000 上仍是同源请求。主机名按当前访问地址拼，换设备无需改页面。
-        var egpuModelLink = document.getElementById('egpu-model-link');
-        if (egpuModelLink) {
-            egpuModelLink.href = 'http://' + window.location.hostname + ':7000/models.html';
-        }
     </script>
 </body>
 </html>
