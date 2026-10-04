@@ -573,6 +573,10 @@ function launch {
 
   FORCE_REBUILD=0
   prepare_big_model_if_needed
+  # UsbGpuStartupFailed is a persistent param and modeld is its only writer, so one bad
+  # bring-up disabled the eGPU for every later boot: auto_install() clears it, but that hook
+  # only runs inside build.py, which a normal boot skips. Re-arm once per boot, here.
+  python3 -c 'from openpilot.selfdrive.modeld.chunked_model import rearm_usbgpu; rearm_usbgpu()' 2>/dev/null || true
   invalidate_modeld_build_if_needed
   invalidate_native_build_if_needed
 
