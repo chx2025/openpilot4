@@ -17,6 +17,7 @@ from openpilot.selfdrive.modeld.jetlink.link import (SPEC, SOCKET, STATUS, REQUE
 from openpilot.selfdrive.modeld.jetlink.models import label
 from openpilot.selfdrive.modeld.jetlink.phase import Publisher as PhasePublisher
 from openpilot.selfdrive.modeld.jetlink.mac import prepare, PreparationDeferred
+from openpilot.selfdrive.modeld.jetlink.usb_claim import capture_context, claimed_by_usbgpu
 from jetlink.client import JetlinkClient
 import jetlink.transport.ffs as ffs_module
 from jetlink.transport.ffs import FfsTransport
@@ -115,18 +116,31 @@ def close_transport(transport):
     log.exception('Jetlink transport close failed')
 
 
-def rebind_transport(transport):
+def rebind_transport(transport) -> bool:
   """Put a gadget back on the bus after protocol 3 took it off.
 
   A write nobody read is answered by unbinding the gadget, so the host sees the
   cable leave; leaving it off until the next session rebuilds the endpoint set
   from scratch. The host is still attached, so reattach the controller here.
+
+  Returns whether the gadget is back on the bus. A failure used to exist in the
+  log file only, so the link could be stuck with nothing on screen saying so.
   """
+  if not transport.bound_udc:
+    return False
+  if claimed_by_usbgpu(transport.bound_udc):
+    # Binding the UDC is the one action here that can drop a running USB-eGPU
+    # (they share the controller; see usb_claim): leave the port to the GPU.
+    log.warning('not rebinding the gadget: a USB-eGPU is using %s', transport.bound_udc)
+    publish('retrying', error='USB eGPU is using the port; jetlink gadget held off')
+    return False
   try:
-    if transport.bound_udc:
-      transport.bind(transport.bound_udc)
-  except Exception:
+    transport.bind(transport.bound_udc)
+    return True
+  except Exception as exc:
     log.exception('Jetlink gadget rebind failed')
+    publish('retrying', error=f'gadget rebind failed: {exc}'[:300])
+    return False
 
 
 def transport_needs_rebuild(exc):
@@ -139,6 +153,53 @@ def transport_needs_rebuild(exc):
   """
   text = str(exc)
   return 'desynced' in text or 'must be reopened' in text
+
+
+def _first_udc() -> str | None:
+  """The device controller the gadget would be bound to, if any."""
+  try:
+    return next(Path('/sys/class/udc').iterdir()).name
+  except (OSError, StopIteration):
+    return None
+
+
+_usbgpu_diagnostic_seen: str | None = None
+_usb_hold_logged = False
+
+
+def _note_usb_hold(active: bool) -> None:
+  """Log entering and leaving the USB-eGPU hold, once per change."""
+  global _usb_hold_logged
+  if active == _usb_hold_logged:
+    return
+  _usb_hold_logged = active
+  if active:
+    log.warning('holding the gadget off: a USB-eGPU is using %s', _first_udc())
+  else:
+    log.info('the USB-eGPU released the controller; the gadget may bind again')
+
+
+def _pending_usbgpu_diagnostic() -> str | None:
+  """The eGPU reason modeld queued, returned once while this process is idle.
+
+  Upstream modeld.py sets CarrotException="egpu_error" when the eGPU fails and
+  leaves the USB-level evidence to whoever notices; on the 2026-10-02 drive
+  nothing did, so a 30 s loss of the model could not be explained afterwards.
+  This process owns the USB gadget and sits idle in exactly that state, so it
+  records the context once per queued reason (usb_claim.capture_context).
+  """
+  global _usbgpu_diagnostic_seen
+  try:
+    from openpilot.common.params import Params
+    reason = Params().get('CarrotException')
+    if isinstance(reason, bytes):
+      reason = reason.decode('utf-8', errors='ignore')
+  except Exception:
+    return None
+  if reason in (None, '') or reason == _usbgpu_diagnostic_seen:
+    return None
+  _usbgpu_diagnostic_seen = reason
+  return f'eGPU diagnostic queued by modeld (CarrotException={reason})'
 
 
 class CarrotTransport(FfsTransport):
@@ -334,9 +395,28 @@ def main():
         # The typec role flickers while a write timeout is being recovered, so
         # this branch only idles: the gadget is kept. Dropping it here is what
         # made every retry rebuild the endpoints and re-enumerate the device.
-        publish('waiting', peer=peer)
+        # A USB-eGPU reads as a powered cable here, so name that case: without it
+        # "idle" cannot be told apart from "the port belongs to the GPU".
+        hold = transport is None and claimed_by_usbgpu(_first_udc())
+        _note_usb_hold(hold)
+        publish('waiting', peer=peer, **({'usb_hold': 'usbgpu'} if hold else {}))
         failures = 0
+        if (pending := _pending_usbgpu_diagnostic()) is not None:
+          # One USB-level dump per queued eGPU diagnostic: modeld's tmux capture
+          # carries none of it (see usb_claim).
+          capture_context(pending, extra={'link': 'jetlink idle'})
         time.sleep(1)
+        continue
+      if transport is None and claimed_by_usbgpu(_first_udc()):
+        # A USB-eGPU is on this controller (they share a600000.ssusb / a600000.dwc3):
+        # binding the gadget would flip the port to device mode and take the GPU off
+        # the bus mid-inference - modeld then burns its whole 30 s HCQ wait and the
+        # camera drops hundreds of frames. Idle exactly as when no host is attached,
+        # and say why (this branch is reached when typec reports a host while the
+        # GPU is on the port, i.e. a hub or a debug cable).
+        _note_usb_hold(True)
+        publish('waiting', peer=peer, usb_hold='usbgpu')
+        time.sleep(2)
         continue
       client = None
       wifi = None
@@ -456,7 +536,11 @@ def main():
           # An abandoned write leaves the gadget off the bus. The host is still
           # attached, so put it straight back instead of waiting for a session
           # that would rebuild the endpoints and make the app start over.
-          rebind_transport(transport)
+          if not rebind_transport(transport):
+            # Could not put it back (a USB-eGPU owns the controller, or the UDC
+            # write failed): back off like any other failure instead of retrying
+            # every 2 s against a port this process does not own right now.
+            failures += 1
       finally:
         if wifi is not None:
           wifi.close()
