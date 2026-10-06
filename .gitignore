@@ -117,3 +117,6 @@ Pipfile
 openpilot/selfdrive/modeld/models/*.pkl.chunk*
 openpilot/selfdrive/modeld/models/.big_model_build_stamp
 openpilot/selfdrive/modeld/models/tg_input_devices.json
+
+# Local Windows native CPU test builds
+*.pyd

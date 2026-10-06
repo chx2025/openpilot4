@@ -6,7 +6,7 @@ import time
 
 import numpy as np
 
-from openpilot.selfdrive.modeld.jetlink.link import Client, SPEC, FAULT, state
+from openpilot.selfdrive.modeld.jetlink.link import ClientConnection, SPEC, FAULT, state
 from openpilot.selfdrive.modeld.jetlink.models import label
 
 MODEL_STATUS = Path('/dev/shm/carrot-jetlink-model.json')
@@ -79,15 +79,13 @@ class JoiningModel:
     self.warp = Warp(width, height)
     self.parser = Parser()
     self.client = None
+    self.connection = None
     self.active = False
     self.usbgpu = False
     self.vision_input_names = ['img', 'big_img']
     self.packed = np.zeros(SPEC.packed_nelem, np.float32)
-    # Protocol 3 drops prev_feat from the packed floats (the server feeds the
-    # hidden state back itself), so the layout comes from the spec's own spans
-    # rather than a cumulative split of packed_shapes.
-    self.views = {name: self.packed[span].reshape(shape)
-                  for name, (span, shape) in SPEC.packed_layout.items()}
+    self.views = {name: a.reshape(shape) for (name, shape), a in zip(
+      SPEC.packed_shapes.items(), np.split(self.packed, np.cumsum(SPEC.packed_sizes[:-1])), strict=True)}
     self.prev_desire = np.zeros(8, np.float32)
     self.frame = 0
     self.join_allowed = False
@@ -113,6 +111,9 @@ class JoiningModel:
       self.next_status = now + 1
 
   def _reset_small(self):
+    if hasattr(self.small, 'reset'):
+      self.small.reset()
+      return
     # Captured JITs keep buffer identities: clear in place, never replace queues.
     self.small.prev_desire[:] = 0
     for array in self.small.npy.values():
@@ -123,13 +124,21 @@ class JoiningModel:
 
   def run(self, bufs, transforms, inputs, prepare_only):
     from openpilot.common.swaglog import cloudlog
+    if self.connection is not None and not (self.ready and self.join_allowed):
+      self.connection.close()
+      self.connection = None
     if self.client is None and self.small_runs >= 3 and self.ready and self.join_allowed and time.monotonic() >= self.next_join:
       try:
-        self.client = Client()
-        self.packed[:] = 0
-        self.prev_desire[:] = 0
-        self.reset = True
+        if self.connection is None:
+          self.connection = ClientConnection()
+        if self.connection.future.done():
+          self.client = self.connection.future.result()
+          self.connection = None
+          self.packed[:] = 0
+          self.prev_desire[:] = 0
+          self.reset = True
       except Exception as exc:
+        self.connection = None
         self.error = str(exc)
         self.next_join = time.monotonic() + 5
     if self.client is not None:
@@ -147,10 +156,7 @@ class JoiningModel:
         result = self.client.infer(images, self.packed, self.frame, self.reset, source_sof=self.source_sof)
         replied = time.monotonic()
         self.reset = False
-        # Protocol 3: the server feeds the hidden state back into its own
-        # queues, so nothing comes back to store in the packed floats. The
-        # reply still has the full output length with hidden_state zeroed,
-        # which keeps the output_slices below valid.
+        self.views['prev_feat'][:] = result[SPEC.output_slices['hidden_state']]
         if not self.active:
           cloudlog.warning('Jetlink active: %s %s', label(), SPEC.sha256)
           self.active = True

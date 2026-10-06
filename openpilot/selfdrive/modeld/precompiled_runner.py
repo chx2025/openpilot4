@@ -13,6 +13,7 @@ import numpy as np
 
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
+from openpilot.selfdrive.modeld.egpu_worker_progress import worker_snapshot
 
 # fork: the generic runtime re-verifies its warp sampling boundary once real camera frames
 # flow. Measured on the C3 USB GPU that costs ~1.07s for an early frame against a ~50-100ms
@@ -66,7 +67,9 @@ class PrecompiledModelState:
     with selectors.DefaultSelector() as selector:
       selector.register(self.process.stdout, selectors.EVENT_READ)
       if not selector.select(timeout):
-        raise TimeoutError('precompiled eGPU worker timed out')
+        error = TimeoutError('precompiled eGPU worker timed out')
+        error.worker_diagnostics = worker_snapshot(Path(self.file.name + '.progress'), self.process.pid)
+        raise error
     value = self.process.stdout.readline()
     if not value:
       raise RuntimeError(f'precompiled eGPU worker exited ({self.process.poll()})')
@@ -151,6 +154,7 @@ class PrecompiledModelState:
       self.shared = None
     self.file.close()
     Path(self.file.name).unlink(missing_ok=True)
+    Path(self.file.name + '.progress').unlink(missing_ok=True)
 
   def __del__(self):
     if getattr(self, 'process', None) is not None:

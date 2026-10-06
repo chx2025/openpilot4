@@ -4,11 +4,8 @@ Every host gets the same treatment. A server that already has an engine for the
 pinned model validates in place; one that does not is sent the ONNX, which the
 comma keeps in CACHE or downloads from the selected model's URL first (which
 model that is lives in models.py). The unmodified upstream Mac app is the
-special case: it polls for cancellation while the app builds by itself.
-
-Nothing here waits for offroad. A comma wired into a car powers up straight into
-onroad, so gating on it only stranded those devices without a model; what really
-invalidates a preparation is the host going away, which `connected` reports.
+special case: its preparation waits for ignition-off and polls for cancellation
+while the app builds by itself.
 """
 import hashlib
 import os
@@ -31,13 +28,6 @@ class PreparationDeferred(RuntimeError):
 
 
 def require_setup(offroad, connected):
-  """Whether a preparation in flight may continue.
-
-  `offroad` is still consulted, but the daemon hands in a permissive predicate:
-  a comma that only ever powers up into onroad would otherwise never get a model.
-  The check stays so a caller that does care - a bench run, a test - can still
-  pass a real one.
-  """
   if not connected():
     raise PreparationDeferred('Host disconnected; waiting for reconnection')
   if not offroad():
@@ -140,8 +130,8 @@ def provision(client, offroad, connected, progress, cache=CACHE):
   The quick probe keeps a host that is already prepared (a Jetson, or a phone
   app that downloaded the model itself) on the fast path. A need_upload answer
   means the model comes from here: the cache, or the selected model's URL when
-  it is missing. The host's build then takes minutes, so this stops the moment
-  the host goes away.
+  it is missing. The host's build then takes minutes, so this runs offroad only
+  and stops with the link.
   """
   try:
     validate_spec(client.ensure_engine(SPEC.sha256, SPEC.nbytes, frame_skip=SPEC.frame_skip, build_timeout=30))
@@ -171,7 +161,7 @@ def prepare(client, peer, offroad, connected, progress, cache=CACHE):
 
   # HELLO resets the upstream session's requested model, so engine_state is
   # normally "none" even when loaded names a resident engine. ENGINE_REQ below
-  # still verifies its full spec.
+  # still verifies its full spec; pending setup remains offroad-only.
   preloaded = peer.get('loaded') == SPEC.sha256
   if not preloaded:
     require_setup(offroad, connected)
@@ -184,8 +174,8 @@ def prepare(client, peer, offroad, connected, progress, cache=CACHE):
     progress('prepare', None, 'Waiting for Mac model preparation')
 
   def stopped():
-    # A ready response returns without building. Any pending build or upload
-    # still stops when the host goes away, including a stale preloaded HELLO.
+    # A ready response returns without building. Any pending build/upload must
+    # still stop when ignition starts, including a stale preloaded HELLO.
     require_setup(offroad, connected)
     return False
 

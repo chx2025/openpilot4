@@ -84,6 +84,7 @@ class HyundaiSafetyFlags(IntFlag):
   FCEV_GAS = 256
   ALT_LIMITS_2 = 512
   ESCC = 1024
+  CANFD_CLUSTER_DIRECT_TX = 2048
 
 
 class HyundaiFlags(IntFlag):
@@ -138,6 +139,7 @@ class HyundaiFlags(IntFlag):
   FCEV = 2 ** 25
 
   ALT_LIMITS_2 = 2 ** 26
+  CANFD_CLUSTER_DIRECT_TX = 2 ** 27
 
   CC_ONLY_CAR = 2 ** 31
 
