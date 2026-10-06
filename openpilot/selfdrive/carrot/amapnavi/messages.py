@@ -72,11 +72,8 @@ class NaviMessageBuilder:
           msg["gas_press"] = shared.gas_press
         if shared.break_press is not None:
           msg["break_press"] = shared.break_press
-        if unified_params.get_bool("EnableCruiseStateShow"):
-          if shared.engaged is not None:
-            msg["engaged"] = shared.engaged
-        else:
-          msg["engaged"] = False
+        if shared.engaged is not None:
+          msg["engaged"] = shared.engaged
         if not unified_params.get_bool("DisableBlindSpot"):
           if shared.left_blindspot is not None:
             msg["left_blindspot"] = shared.left_blindspot
@@ -251,9 +248,13 @@ class NaviMessageBuilder:
 
     if sm.alive['selfdriveState']:
       shared.selfdrive_active = bool(sm['selfdriveState'].active)
+    # 「显示巡航小蓝灯」开关：App 的巡航小蓝灯取自本消息(blinker)的 active/engaged，
+    # 所以必须在这里压成 False —— 只屏蔽 build_navi() 里的 engaged 会被本段覆盖，
+    # 表现就是"参数设成不显示、灯还是亮的"。
+    show_cruise = unified_params.get_bool("EnableCruiseStateShow")
     if shared.cruise_valid is not None:
-      msg['active'] = shared.cruise_valid
-    cruise_enable = bool(shared.selfdrive_active)
+      msg['active'] = shared.cruise_valid and show_cruise
+    cruise_enable = bool(shared.selfdrive_active) and show_cruise
     if cruise_enable:
       msg['active'] = True
     if not msg.get('engaged', False):
