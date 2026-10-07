@@ -42,6 +42,11 @@ from ..services.params import HAS_PARAMS, Params
 CATALOG_PATH = 'models/catalog.json'
 REMOTE_TIMEOUT = 6.0
 
+# The server may mark an entry "jetlink_only":true for a contract the comma only
+# pushes over USB (jetlink's own picker). Such a directory has no eGPU delivery -
+# its precompiled.json can describe a different artifact - so this page skips the
+# entry, in the list and in the select route. See build_models_payload.
+
 # The boot launcher starts this downloader (launch_chffrplus.sh: run_big_model_update) and
 # looks for the same marker. The page reuses it so picking a model downloads it right away
 # instead of waiting for the next boot - where the very first attempt can run before DNS is
@@ -302,6 +307,14 @@ def build_models_payload() -> dict[str, Any]:
     sha = entry.get('sha256')
     if not isinstance(sha, str) or len(sha) != 64:
       continue
+    if entry.get('jetlink_only') is True:
+      # A contract jetlink pushes over USB has no eGPU delivery of its own: the
+      # directory's precompiled.json describes a different artifact, so offering
+      # it here would only start a 766 MB download that has to fall back to
+      # compiling locally. Drop any local record too, so the fallback loop below
+      # cannot resurface a model this page deliberately does not offer.
+      by_sha.pop(sha, None)
+      continue
     known = by_sha.pop(sha, {})
     # known comes from list_models(), which decides `downloaded` from the ONNX files
     # actually on disk. The index also holds entries pre-registered from the remote
@@ -369,6 +382,11 @@ async def api_select(request: web.Request) -> web.Response:
   # the old address.
   for entry in (_remote_catalog() or {}).get('models', []) or []:
     if isinstance(entry, dict) and entry.get('sha256') == sha:
+      if entry.get('jetlink_only') is True:
+        # Hidden from the page, but the API has to refuse it too: registering one
+        # would write a jetlink-only contract into the eGPU index, where the
+        # local-state loop would then list it back.
+        return web.json_response({'ok': False, 'error': 'this model is jetlink-only'}, status=409)
       model_catalog.register_remote(entry)
       break
 
