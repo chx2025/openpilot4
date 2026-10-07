@@ -15,10 +15,11 @@ from openpilot.common.jetlink_peer import is_mac_peer
 from openpilot.selfdrive.modeld.jetlink import link, mac
 from jetlink import protocol as P
 from jetlink.client import JetlinkClient
+from jetlink.server.session import Session
 from jetlink.transport.tcp import TcpTransport
 from jetlink.transport.base import LinkError, LinkTimeout
 
-PEER = {'protocol': 3, 'backend': 'ort', 'device': 'ane-Apple_M1_Pro'}
+PEER = {'protocol': 2, 'backend': 'ort', 'device': 'ane-Apple_M1_Pro'}
 
 
 @pytest.mark.parametrize('tag', ['ane-Apple_M1_Pro', 'coreml-Apple-M2-Max', 'ane-whole-Apple_M4', 'ane-Apple_M3_Ultra'])
@@ -125,14 +126,17 @@ def test_real_wire_upload_ready_inference_and_cached_reconnect(tmp_path, monkeyp
     state = {'requests': 0}
     def host():
       try:
-        # A minimal protocol-3 server over the wire: 0.7.2 ships no Python
-        # server, so the fixture answers hello, engine, upload and infer
-        # itself instead of driving upstream's Session.
+        # Use upstream HELLO itself: its engine_state is request-scoped and
+        # starts at none even with an already-loaded model on reconnect.
+        hello_host = SimpleNamespace(backend=SimpleNamespace(describe=lambda: dict(PEER)),
+          telemetry=SimpleNamespace(read=lambda: {}), status=lambda *a: {'state': 'none'},
+          loaded_sha=lambda: spec.sha256 if uploaded else None, sleep_after=0,
+          cache=SimpleNamespace(inventory=lambda: []))
+        hello_session = Session(remote, hello_host)
         while True:
           msg = remote.recv(timeout=3)
           if msg.msg_type == P.Msg.HELLO_REQ:
-            remote.send_json(P.Msg.HELLO_RESP, msg.seq,
-                             dict(protocol=P.VERSION, loaded=None, backend='trt', device='Orin'))
+            hello_session.on_hello(msg)
           elif msg.msg_type == P.Msg.ENGINE_REQ:
             state['requests'] += 1
             request = json.loads(bytes(msg.payload))
@@ -154,10 +158,8 @@ def test_real_wire_upload_ready_inference_and_cached_reconnect(tmp_path, monkeyp
           elif msg.msg_type == P.Msg.INFER_REQ:
             frame, _ = P.unpack_infer_req(msg.payload)
             assert len(msg.payload) == P.INFER_REQ_SIZE + spec.warped_nbytes + spec.packed_nbytes
-            # Protocol 3: the reply is the outputs less hidden_state, which the
-            # server keeps; the client rebuilds the full-length vector.
             remote.send(P.Msg.INFER_RESP, msg.seq, [P.pack_infer_resp(frame, P.Status.OK, 1, 2, 3),
-                                                    np.zeros(spec.reply_nelem, np.float32)])
+                                                    np.zeros(spec.output_nelem, np.float32)])
       except LinkError:
         pass
       except BaseException as exc:
