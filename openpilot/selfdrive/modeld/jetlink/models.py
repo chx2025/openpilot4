@@ -26,6 +26,12 @@ SPEC_DIR = Path(__file__).resolve().parent
 BUILTIN_SPEC = 'cinque_v2.json'
 DEFAULT_LABEL = 'Cinque v2'
 
+# A second contract this branch can hand the host, listed beside the pin so the
+# picker offers it without the server having to describe it. Only protocol v3
+# hosts can run it: they keep the model's recurrent queues themselves, which is
+# why the wire still carries the pinned 48 bytes of scalars (spec_v3.py).
+OPTIONAL_SPECS = ({'spec_file': 'cinque_v3.json', 'label': 'CTM V3'},)
+
 # Where the ONNX handed to the host is kept, keyed by SPEC.sha256. LEGACY_CACHE
 # holds the copy from when only the Mac app could be provisioned.
 CACHE = Path('/data/models/carrot-jetlink-host')
@@ -84,6 +90,37 @@ def _builtin() -> list[dict]:
   return [{'sha256': sha, 'label': DEFAULT_LABEL, 'spec_file': BUILTIN_SPEC,
            'spec': spec, 'url': _builtin_url(sha), 'nbytes': spec.get('nbytes'),
            'builtin': True}]
+
+
+def _optional_onnx_url() -> str | None:
+  """Where the v3 ONNX is served: beside the v3 pickle model_source pins.
+
+  The pickle and the ONNX are delivered out of one directory, so the branch's
+  own model list is the single place that names the mirror.
+  """
+  try:
+    from openpilot.selfdrive.modeld import model_source
+  except Exception:
+    return None
+  for meta in getattr(model_source, 'OPTIONAL_MODELS', ()):
+    url = meta.get('url')
+    if isinstance(url, str) and url.endswith('big_driving_tinygrad.pkl'):
+      return url[:-len('big_driving_tinygrad.pkl')] + 'big_driving_supercombo.onnx'
+  return None
+
+
+def _optional() -> list[dict]:
+  """Extra contracts this branch ships, described from their own SPEC."""
+  url = _optional_onnx_url()
+  result = []
+  for item in OPTIONAL_SPECS:
+    spec = _read_json(SPEC_DIR / item['spec_file'])
+    sha = spec.get('sha256')
+    if not isinstance(sha, str) or len(sha) != 64:
+      continue
+    result.append({'sha256': sha, 'label': item['label'], 'spec_file': item['spec_file'],
+                   'spec': spec, 'url': url, 'nbytes': spec.get('nbytes'), 'builtin': False})
+  return result
 
 
 def _base_url() -> str | None:
@@ -187,7 +224,7 @@ def write_index(selected: str | None, entry: dict | None = None) -> bool:
 
 def entries(refresh: bool = True) -> list[dict]:
   """Built-in models first, then anything the catalog adds."""
-  result = _builtin()
+  result = _builtin() + _optional()
   known = {item['sha256'] for item in result}
   if refresh:
     for item in remote_catalog() or []:

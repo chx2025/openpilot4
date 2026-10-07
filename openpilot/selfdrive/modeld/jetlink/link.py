@@ -12,14 +12,17 @@ import numpy as np
 
 from openpilot.selfdrive.modeld.jetlink import VENDOR  # noqa: F401
 from openpilot.selfdrive.modeld.jetlink.models import spec_path
+from openpilot.selfdrive.modeld.jetlink.spec_v3 import load_spec
 from openpilot.common.jetlink_status import badge  # noqa: F401
 from jetlink.spec import ModelSpec
 
 # Both ends have to agree on this: the sha256 inside the SPEC names the cache
 # file on each side and the host builds its engine for it. Which SPEC is loaded
 # follows the selected model (models.py) instead of a name fixed here, so
-# switching models stays one edit deep.
-SPEC = ModelSpec.from_dict(json.loads(spec_path().read_text()))
+# switching models stays one edit deep. The contract itself decides how it is
+# read: a Cinque v3 export is served through the same properties as the pin
+# (spec_v3.py), and what we publish stays exactly what the host derived.
+SPEC = load_spec(json.loads(spec_path().read_text()))
 SOCKET = '/dev/shm/carrot-jetlink.sock'
 STATUS = Path('/dev/shm/carrot-jetlink.json')
 FAULT = Path('/dev/shm/carrot-jetlink-fault')
@@ -126,7 +129,19 @@ def state():
 
 
 def validate_spec(spec):
-  if spec.to_dict() != SPEC.to_dict():
+  theirs, ours = spec.to_dict(), SPEC.to_dict()
+  if theirs != ours:
+    # A mismatch is the host having built a different model than the one this
+    # device selected. Name the fields, so one look at the log says whether we
+    # read the export wrong or the selection is stale.
+    try:
+      from openpilot.common.swaglog import cloudlog
+      for key in sorted(set(theirs) | set(ours)):
+        if theirs.get(key) != ours.get(key):
+          cloudlog.warning('Jetlink contract differs on %s: host=%s local=%s',
+                           key, theirs.get(key), ours.get(key))
+    except Exception:
+      pass
     raise ValueError('Jetlink model identity or input/output contract mismatch')
 
 
