@@ -207,6 +207,19 @@ def patch_record_failure(precompiled_model) -> bool:
   return True
 
 
+def _selected_manifest():
+  """The model that may execute, asked of the module that defines it.
+
+  Not ``helpers.active_manifest``: that name was only readable on ``helpers`` because
+  upstream imported it there, and upstream has since renamed it (``selected_manifest``)
+  and dropped that import, which made every call below raise AttributeError at interpreter
+  start (ui_state resolves the compiled path while importing). Reading the definition site
+  keeps this file out of upstream's import list, which is the whole reason it exists.
+  """
+  from openpilot.selfdrive.modeld.big_model import selected_manifest
+  return selected_manifest()
+
+
 def patch_model_delivery(helpers) -> bool:
   """Make upstream's artifact resolution honour the pinned delivery in both directions.
 
@@ -248,7 +261,7 @@ def patch_model_delivery(helpers) -> bool:
       from openpilot.selfdrive.modeld.precompiled_model import installed
     except Exception:
       return None, None
-    model = helpers.active_manifest()
+    model = _selected_manifest()
     if model is None:
       return None, None
     try:
@@ -271,7 +284,7 @@ def patch_model_delivery(helpers) -> bool:
     if pinned_source() != "precompiled":
       # 'auto' and 'chunked' both want the chunked artifact first; only the answer for a
       # missing set differs, and a precompiled-only model has no chunked set either way.
-      model = helpers.active_manifest()
+      model = _selected_manifest()
       if model is not None and not model.precompiled_only:
         chunked = chunked_artifact(model)
         if chunked is not None:
@@ -283,7 +296,7 @@ def patch_model_delivery(helpers) -> bool:
 
   def usbgpu_compile_pending():
     if pinned_source() == "chunked":
-      model = helpers.active_manifest()
+      model = _selected_manifest()
       if model is not None and not model.precompiled_only and chunked_artifact(model) is None:
         return True  # the boot build still has to produce it, so nothing usable is here yet
     model, precompiled = pinned_precompiled()
