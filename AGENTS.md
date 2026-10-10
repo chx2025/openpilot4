@@ -1,5 +1,60 @@
 # Repository memory
 
+- On 2026-10-10, RAV4 route 0d segments 5-9 on e7987ed confirmed an
+  onroadEvents cadence regression: healthy event-change bursts exceed the 1 Hz
+  tracker's upper bound and the continuous readiness gate interrupts steering.
+  Check event receipt/validity/liveness without fixed-rate rejection; retain
+  periodic-input checks and the separately requested startup-only latch in
+  7ceee11642, which includes this correction. Lateral selection alone still
+  needs active cruise or AlwaysLateral. All five minutes have cruise inactive;
+  no Panda TX rejection or new CAN errors. The long segment 6-7 inactivity is
+  not fully explained by event cadence; live setting changes are not captured.
+  166 focused tests pass; recorded-input readiness matches all 11,201 examined
+  decisions in segments 5/8 after warmup. No physical steering validation.
+  Keep incident data local. See docs/rav4_steering_20261010.md.
+
+- On 2026-10-10, the user clarified that the Sonata startup fix must apply
+  only until FIRST readiness, never reblock during operation. This supersedes
+  e7987ed0fd's continuous readiness checks and repeated PID/curvature resets.
+  controlsd/card now latch readiness once per process lifetime; disengagement,
+  reengagement and later bad inputs do not rearm it. Nominal geometry is startup-
+  only; measured curvature seeds the first lateral activation only. Restore
+  existing torque reset behavior. Hyundai camera-SCC waits only for its first
+  steering TX template, preserving the bounded first CAN command. Keep existing
+  runtime safety, limits, longitudinal policy and firmware unchanged. 241 focused
+  tests, 5,969 recorded-input frames and 6,000 post-startup control frames pass;
+  the latter exactly match pre-fix 5479d1279a outputs/PID/ratio with input health
+  changes and reengagement. Replay is not vehicle-response validation. Keep raw
+  incident data local. See docs/sonata_92_startup_steering_20261010.md.
+
+- On 2026-10-09, after trying Mountain Dew 870a4823, the user requested
+  returning carrot-wip's eGPU model to Cinque v3 (892fc3a1, AMD e758b96d,
+  isolated tinygrad d5e17c93). This supersedes the MDM selection below, not
+  the completed branch consolidation. Retain shared HUD/camera/startup/UI
+  fixes, MDM format compatibility, internal/DM models and Jetson Cinque v2.
+  Do not recreate retired branches. A user-facing model selector was discussed
+  as a possible follow-up, not implemented. See docs/mdm2_20261008.md.
+
+- On 2026-10-09, the user requested full integration of `carrot-mdm2` into
+  `carrot-wip` and deletion of the local and remote `carrot-mdm2`/`carrot-mdm`
+  branches. `carrot-wip` now selects Mountain Dew v1 checkpoint 870a4823,
+  AMD model e20cde17, with the existing pinned runtime and NAS mdm2 package URL.
+  This supersedes the branch-only restriction below; do not recreate the retired
+  branches. Keep the newer wip HUD/camera recovery, DM notices and GV70 fixes.
+  Internal/DM models, Jetson Cinque v2 and control/validity policies remain
+  unchanged. Model compatibility CI follows carrot-wip. See docs/mdm2_20261008.md.
+
+- On 2026-10-08, the user confirmed PR #39047 commit 4bfb534063 for `carrot-mdm2`,
+  starting from carrot-wip ca8f553d1e. The previous bea3fd4 remains carrot-mdm.
+  Pin the new e20cde17 AMD model and 870a4823/12864 metadata checkpoint on this
+  branch only; upstream's commit subject says 1284 but the file says 12864.
+  Keep the 9d0446a4 tinygrad runtime and MDM compatibility adapter. The matching
+  870a4823 ONNX is absent from the public export catalog; Jetson stays Cinque v2.
+  Do not label this a new official MDM v2 or claim Jetson MDM support. Preserve
+  internal/DM models, control, validity and C3 warp policy. Include the inherited
+  boot selected-model delivery gate and core4 USB cluster placement.
+  See docs/mdm2_20261008.md for artifact identity and validation limits.
+
 - On 2026-10-05, the user clarified that instructions such as "작업해" or
   "진행해" include committing and pushing the completed task unless explicitly
   instructed otherwise. Commit only the task's changes; preserve unrelated work.

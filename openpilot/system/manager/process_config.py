@@ -85,7 +85,8 @@ def enable_dm_model(started, params, CP: car.CarParams) -> bool:
 #  return params.get_int("EnableConnect") > 0
 
 def enable_xiaoge_data(started, params, CP: car.CarParams) -> bool:
-  return params.get_bool("ShareData")
+  # Manager additionally waits for this onroad session's healthy startup.
+  return started and params.get_bool("ShareData")
 
 def cluster_hud_active(params: Params) -> bool:
   try:
@@ -101,30 +102,7 @@ def enable_webrtc(started, params, CP: car.CarParams) -> bool:
 def c3x_lite(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and params.get_bool("HardwareC3xLite")
 
-def enable_youtube_low_encoder(started, params, CP: car.CarParams) -> bool:
-  try:
-    return params.get_int("CarrotYouTubeLive") > 0 and params.get_int("CarrotYouTubeQuality") not in (1, 2, 3)
-  except Exception:
-    return False
 
-def enable_youtube_medium_encoder(started, params, CP: car.CarParams) -> bool:
-  try:
-    return params.get_int("CarrotYouTubeLive") > 0 and params.get_int("CarrotYouTubeQuality") == 1
-  except Exception:
-    return False
-
-def enable_youtube_encoder(started, params, CP: car.CarParams) -> bool:
-  try:
-    return params.get_int("CarrotYouTubeLive") > 0 and params.get_int("CarrotYouTubeQuality") == 2
-  except Exception:
-    return False
-
-def enable_youtube_wide_encoder(started, params, CP: car.CarParams) -> bool:
-  try:
-    use_wide_camera = bool(params.get("UseWideCamera", return_default=True))
-    return use_wide_camera and params.get_int("CarrotYouTubeLive") > 0 and params.get_int("CarrotYouTubeQuality") == 3
-  except Exception:
-    return False
 
 def enable_cluster_hud(started, params, CP: car.CarParams) -> bool:
   return cluster_hud_active(params)
@@ -140,10 +118,6 @@ procs = [
   # Prewarm the hardware encoder with the rest of the onroad stack. The
   # encoder process stays idle until CarrotVisionActive is set by a session.
   NativeProcess("carrot_vision_encoderd", "openpilot/system/loggerd", ["./encoderd", "--carrot-vision-road"], and_(iscar, enable_webrtc)),
-  NativeProcess("youtube_low_encoderd", "openpilot/system/loggerd", ["./encoderd", "--youtube-low"], and_(only_onroad, enable_youtube_low_encoder)),
-  NativeProcess("youtube_medium_encoderd", "openpilot/system/loggerd", ["./encoderd", "--youtube-medium"], and_(only_onroad, enable_youtube_medium_encoder)),
-  NativeProcess("youtube_encoderd", "openpilot/system/loggerd", ["./encoderd", "--youtube"], and_(only_onroad, enable_youtube_encoder)),
-  NativeProcess("youtube_wide_encoderd", "openpilot/system/loggerd", ["./encoderd", "--youtube-wide"], and_(only_onroad, enable_youtube_wide_encoder)),
   PythonProcess("logmessaged", "openpilot.system.logmessaged", always_run),
 
   NativeProcess("camerad", "openpilot/system/camerad", ["./camerad"], driverview, enabled=not WEBCAM),
@@ -210,7 +184,9 @@ procs = [
   PythonProcess("carrot_cluster", "openpilot.selfdrive.carrot.cluster_autorun", enable_cluster_hud, restart_if_crash=True),
 
   #Xiaoge data broadcaster (conditional on ShareData param)
-  PythonProcess("xiaoge_data", "openpilot.selfdrive.carrot.xiaoge_data", enable_xiaoge_data),
+  # Starts after onroad readiness, when manager already has live IPC mappings.
+  # Launch a fresh interpreter instead of forking that running manager state.
+  PythonProcess("xiaoge_data", "openpilot.selfdrive.carrot.xiaoge_data", enable_xiaoge_data, spawn=True),
 
   # C3x lite has no speaker; mirror alerts to the GPIO buzzer instead.
   PythonProcess("beep", "openpilot.selfdrive.controls.beep", c3x_lite, enabled=TICI),

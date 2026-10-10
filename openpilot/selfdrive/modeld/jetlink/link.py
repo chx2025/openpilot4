@@ -11,18 +11,11 @@ import threading
 import numpy as np
 
 from openpilot.selfdrive.modeld.jetlink import VENDOR  # noqa: F401
-from openpilot.selfdrive.modeld.jetlink.models import spec_path
-from openpilot.selfdrive.modeld.jetlink.spec_v3 import load_spec
 from openpilot.common.jetlink_status import badge  # noqa: F401
 from jetlink.spec import ModelSpec
+from openpilot.selfdrive.modeld.jetlink.contracts import DEFAULT_SPEC, validate_model_spec
 
-# Both ends have to agree on this: the sha256 inside the SPEC names the cache
-# file on each side and the host builds its engine for it. Which SPEC is loaded
-# follows the selected model (models.py) instead of a name fixed here, so
-# switching models stays one edit deep. The contract itself decides how it is
-# read: a Cinque v3 export is served through the same properties as the pin
-# (spec_v3.py), and what we publish stays exactly what the host derived.
-SPEC = load_spec(json.loads(spec_path().read_text()))
+SPEC = DEFAULT_SPEC
 SOCKET = '/dev/shm/carrot-jetlink.sock'
 STATUS = Path('/dev/shm/carrot-jetlink.json')
 FAULT = Path('/dev/shm/carrot-jetlink-fault')
@@ -129,19 +122,7 @@ def state():
 
 
 def validate_spec(spec):
-  theirs, ours = spec.to_dict(), SPEC.to_dict()
-  if theirs != ours:
-    # A mismatch is the host having built a different model than the one this
-    # device selected. Name the fields, so one look at the log says whether we
-    # read the export wrong or the selection is stale.
-    try:
-      from openpilot.common.swaglog import cloudlog
-      for key in sorted(set(theirs) | set(ours)):
-        if theirs.get(key) != ours.get(key):
-          cloudlog.warning('Jetlink contract differs on %s: host=%s local=%s',
-                           key, theirs.get(key), ours.get(key))
-    except Exception:
-      pass
+  if spec.to_dict() != SPEC.to_dict():
     raise ValueError('Jetlink model identity or input/output contract mismatch')
 
 
@@ -160,28 +141,28 @@ class Client:
     try:
       self.sock.connect(path)
       hello = json.loads(receive(self.sock, time.monotonic() + timeout))
-      validate_spec(ModelSpec.from_dict(hello['spec']))
+      self.spec = validate_model_spec(ModelSpec.from_dict(hello['spec']))
     except Exception:
       self.sock.close()
       raise
     self.timings = (0, 0, 0)
-    self.reader = PacketReader(REPLY.size + SPEC.output_nbytes)
+    self.reader = PacketReader(REPLY.size + self.spec.output_nbytes)
 
   def infer(self, image, packed, frame, reset=False, source_sof=0):
-    if image.dtype != np.uint8 or image.shape != SPEC.warped_shape or not image.flags.c_contiguous:
+    if image.dtype != np.uint8 or image.shape != self.spec.warped_shape or not image.flags.c_contiguous:
       raise ValueError('invalid warped image')
-    if packed.dtype != np.float32 or packed.size != SPEC.packed_nelem or not packed.flags.c_contiguous or not np.all(np.isfinite(packed)):
+    if packed.dtype != np.float32 or packed.size != self.spec.packed_nelem or not packed.flags.c_contiguous or not np.all(np.isfinite(packed)):
       raise ValueError('invalid recurrent input')
     deadline = time.monotonic() + self.timeout
     self.sock.settimeout(self.timeout)
     send_parts(self.sock, REQUEST.pack(frame, int(reset), source_sof), image, packed, deadline=deadline)
     reply = self.reader.receive(self.sock, deadline)
-    if len(reply) != REPLY.size + SPEC.output_nbytes:
+    if len(reply) != REPLY.size + self.spec.output_nbytes:
       raise ValueError('invalid inference reply size')
     fid, *self.timings = REPLY.unpack_from(reply)
     if fid != frame:
       raise ValueError('stale inference reply')
-    output = np.frombuffer(reply, np.float32, SPEC.output_nelem, REPLY.size).copy()
+    output = np.frombuffer(reply, np.float32, self.spec.output_nelem, REPLY.size).copy()
     if not np.all(np.isfinite(output)):
       raise ValueError('nonfinite inference reply')
     return output

@@ -1,5 +1,11 @@
 # Jetson boot update and first-time transition
 
+**Superseded first-time workflow:** later on October 7 the user selected a
+[one-time Windows storage patch](jetson_offline_boot_patch_20261007.md) instead.
+The Web wait card/timer, API and manual offroad hold described below are retired;
+saved holds clear at updated manager startup. The automatic USB boot gate remains.
+The sections below retain the earlier implementation and test history.
+
 The user requested checking the comma-selected Jetson release at startup,
 holding Jetson inference/HUD while an update is required, waiting through
 Internet loss, and showing the reason on the comma. Existing cars power the
@@ -100,3 +106,98 @@ Signature validation, committed-source byte comparison, NAS copy verification,
 and complete HTTPS readback of both bundle and manifest passed. Private keys,
 untracked work and captures are absent. The pinned Cinque v2 model and
 L4T/TensorRT ABI are unchanged; the SD-image/stable-channel pointers are unchanged.
+
+## Follow-up: first-update wait screen
+
+The iconless maintenance card originally placed its sole body in the shared
+54px icon grid column (44px at the mobile breakpoint). The body now spans both
+columns. Production CSS/markup were rendered in Chrome at 1030px and a real
+390px iframe viewport; the text/button stay inside the card without horizontal
+overflow. The localized waiting text now explicitly distinguishes the roughly
+15-minute legacy check interval from download time and completion.
+
+The published older updater was checked directly: boot check after two minutes,
+15-minute subsequent interval, and up to 30 seconds randomized delay. A parked
+device reporting fresh offroad and the correct signed pin completed an explicitly
+triggered existing stage service in about 18 seconds, with the 64.5MB bundle and
+the 766MB model already cached. Its status was `staged`; this was download and
+verification, not runtime activation or a general duration guarantee. Triggering
+the service preserves its offroad/signature/ABI checks. SSH diagnostic access
+requires an individually authorized key; no fleet-wide SSH credential is added.
+
+The user then explicitly requested a Jetson reboot. After rechecking fresh
+offroad state and the exact staged signed target, the host was rebooted through
+its authorized SSH account. A changed kernel boot ID, `applied` status and
+current source `84087a5b78118acc40234bfd8ef64235421f1aab` were confirmed. The boot
+apply service ran from 12:40:28 to 12:40:44 KST and emitted `CANDIDATE_PROBE_OK`.
+The runtime installed its bootstrap without per-car manual installation, both
+runtime/HUD services became active, USB reconnected, and fresh comma telemetry
+returned to onroad. This establishes the first migration and existing candidate
+probe on one parked device. It does not yet validate a subsequent boot using
+the new USB-only gate, physical HUD output, or loaded driving behavior.
+
+## Follow-up: visible elapsed time and maintenance meaning
+
+The Web first-update card now shows **Wait elapsed / 대기 경과** as minutes and
+seconds, plus the current USB connection state. The backend measures monotonic
+elapsed time from the first observation of the pending hold and stores its start
+in `/dev/shm/carrot-jetson-wait-start`. Page refresh, Web worker restart and Jetson
+power cycles retain the clock. C4 reboot clears the boot-local clock; an already
+pending hold starts measuring again at its first status request. Cancel/completion
+removes the clock on the next status read. Invalid clocks start over, storage
+failure leaves the timer unavailable, and neither case modifies the pending hold.
+The page refreshes status once per second and blanks stale time on API failure.
+
+Localized explanations distinguish the C4 software offroad state from physical
+ignition. Pending maintenance continues to hold C4 offroad even if the vehicle
+moves, with driving assistance stopped. It therefore still supplies an offroad
+selection to the old updater while powered and connected; this is not a new
+driving mode or a claim of loaded driving validation. Canceling the hold restores
+normal startup eligibility. The old updater checks offroad at stage entry; it
+does not continuously cancel an already-running download when road state changes.
+
+Restarting only Jetson immediately after entering maintenance retains the C4
+hold and timer, and gives the old updater its approximately two-minute boot
+check instead of waiting for a later approximately 15-minute periodic check.
+USB reconnection is not proof of reboot, download start or completion. The UI
+does not infer those events, show a completion countdown, or release maintenance
+after a duration. Twenty elapsed minutes do not guarantee a staged download.
+
+Validation: 31 focused Python tests and 5 Web tests passed, along with Ruff and
+the Web build. Production markup/styles rendered with a visible `02:05` timer
+at 1030px and a true 390px CSS viewport, with no horizontal overflow. Device
+display and actual power-cycle timer behavior remain unvalidated. This change
+does not republish or change the selected Jetson runtime.
+
+## Follow-up: subsequent-boot handover error, 2026-10-07
+
+A subsequent boot with the signed 84087a5b host reached boot-ready successfully,
+then the normal server logged `unknown_message: type 16387` before its first
+normal HELLO. The vehicle logged the corresponding connection exception and
+subsequently reconnected successfully. This is a boot protocol transition
+failure, separate from Panda SPI transport errors.
+
+The bootstrap loop calls `Gate.tick()` after every received message. A valid
+manifest matching the installed source makes it ready immediately; the loop
+can close the transport before answering the vehicle's following STATE_REQ.
+The normal server can then answer that request without a `carrot_update`
+object. The vehicle currently treats this as an empty update status and sends
+another manifest (`0x4003`, decimal 16387). The normal inference server does
+not implement this bootstrap-only command and correctly rejects it.
+
+An in-memory reproduction using the production Gate, BootstrapSession,
+JetlinkClient and vehicle wait function reproduced that exact error. The
+simulated normal server supplied the production STATE response fields and
+unknown-message behavior. Signature verification was stubbed only in the
+local reproduction; the actual boot used the signed matching release. On the
+device, gate exit occurred at boot+16.833 s, normal control-listener startup
+at +20.271 s, rejection at +20.924 s and fresh HELLO at +25.057 s.
+
+There is also a separate expected-transition issue: even receiving explicit
+`ready` raises a generic ConnectionError, which the daemon currently presents
+as a connection failure. A correction needs an explicit successful handover
+and fresh runtime handshake, while retaining real manifest, transport and
+runtime errors. No protocol fix or new signed host release was applied in
+this investigation. Rebooting only the vehicle while Jetson was already in
+normal runtime reconnected without this gate-specific error; that is not a
+validation of a fix. Private journals and the reproducer remain local.
