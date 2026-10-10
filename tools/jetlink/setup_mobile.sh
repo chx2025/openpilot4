@@ -78,26 +78,52 @@ try:
       saved = json.loads(record.read_text())
       if saved != {'pid': pid, 'start': start}:
         raise ValueError('PID was reused or is not helper-owned')
-    if action == 'stop':
+
+    def send(sig, wait):
+      """Signal the recorded PID after revalidating it, then wait up to `wait` s.
+
+      A vanished /proc entry counts as stopped: there is nothing left to signal,
+      and reporting a failure then would block the daemon over a process that is
+      already gone.
+      """
       if fd is not None and hasattr(signal, 'pidfd_send_signal'):
-        signal.pidfd_send_signal(fd, signal.SIGTERM)
+        signal.pidfd_send_signal(fd, sig)
         poll = select.poll()
         poll.register(fd, select.POLLIN)
-        if not poll.poll(2000):
-          raise ValueError('helper dnsmasq did not stop within two seconds')
-      else:
+        return bool(poll.poll(int(wait * 1000)))
+      try:
         latest = (proc / 'stat').read_text().rsplit(') ', 1)[1].split()[19]
-        if latest != start or (proc / 'cmdline').read_bytes().split(b'\0') != args:
-          raise ValueError('PID changed before signaling')
-        os.kill(pid, signal.SIGTERM)
-        deadline = time.monotonic() + 2
-        while proc.exists():
+        matched = latest == start and (proc / 'cmdline').read_bytes().split(b'\0') == args
+      except OSError:
+        return True
+      if not matched:
+        raise ValueError('PID changed before signaling')
+      try:
+        os.kill(pid, sig)
+      except ProcessLookupError:
+        return True
+      deadline = time.monotonic() + wait
+      while True:
+        try:
           fields = (proc / 'stat').read_text().rsplit(') ', 1)[1].split()
-          if fields[19] != start or fields[0] == 'Z':
-            break
-          if time.monotonic() >= deadline:
-            raise ValueError('helper dnsmasq did not stop within two seconds')
-          time.sleep(.02)
+        except OSError:
+          return True
+        if fields[19] != start or fields[0] == 'Z':
+          return True
+        if time.monotonic() >= deadline:
+          return False
+        time.sleep(.02)
+
+    if action == 'stop':
+      # Escalate once instead of giving up. dnsmasq can sit in a syscall past a
+      # short SIGTERM grace (the netdev is already gone when the daemon tears the
+      # cable down), and failing there left modeld's daemon permanently `blocked`:
+      # it may not rebind without proof the previous DHCP owner is gone. The
+      # ownership rechecks above are what make the escalation safe - only a PID
+      # this helper recorded, still running the helper's own executable and exact
+      # arguments, is ever signalled.
+      if not send(signal.SIGTERM, 2.0) and not send(signal.SIGKILL, 2.0):
+        raise ValueError('helper dnsmasq survived SIGTERM and SIGKILL; refusing to report a clean teardown')
       pidfile.unlink(missing_ok=True)
       record.unlink(missing_ok=True)
   finally:
