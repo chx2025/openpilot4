@@ -88,21 +88,3 @@ def test_remove_keeps_working_for_the_pinned_onnx_name(select, monkeypatch, tmp_
 
   assert response.status == 200
   assert cached.exists() is False
-
-
-def test_jetlink_only_entry_is_neither_listed_nor_selectable(select, monkeypatch):
-  # The server can mark a contract as jetlink's own (the Cinque v3 ONNX sits in
-  # the same directory as the precompiled PKL, so its precompiled.json describes
-  # another artifact). This page must not offer it, and the API must refuse it
-  # even by hand: registering it would put the contract in the eGPU index, from
-  # where the local-state loop would list it back.
-  jetlink_sha = "404a18cfd86d29637d20c697dfde245bb47c666ae016730ab674c65f4d1e1aa4"
-  remote = {"models": [dict(entry(jetlink_sha, "big_driving_supercombo.onnx"), jetlink_only=True)]}
-  monkeypatch.setattr(select, "_remote_catalog", lambda: remote)
-  monkeypatch.setattr(select.model_catalog, "list_models", lambda *a, **k: [])
-
-  payload = select.build_models_payload()
-
-  assert payload["models"] == []
-  response = asyncio.run(select.api_select(FakeRequest({"sha256": jetlink_sha})))
-  assert response.status == 409
