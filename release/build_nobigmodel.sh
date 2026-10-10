@@ -74,7 +74,7 @@ echo "    openpilot stopped"
 echo "==> Backing up .git and release/"
 BK="/data/pre_release_backup_$(date +%m%d_%H%M)"
 mkdir -p "$BK"
-cp -a "$BUILD_DIR/.git" "$BK/git"
+#cp -a "$BUILD_DIR/.git" "$BK/git"
 # release/ is deleted by this very script, so it is already gone on a second run.
 # Backing it up is best effort (and `set -e` would abort the whole publish here).
 if [ -d "$BUILD_DIR/release" ]; then
