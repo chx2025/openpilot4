@@ -59,5 +59,4 @@ disappears on its own once that artifact runs - not only after the next power cy
 loading, delivery in flight, stale status, cleared once running, download progress) and
 `openpilot/selfdrive/modeld/tests/test_precompiled_fetch.py` (`+2`: a landing delivery asks
 for the reboot, an already-installed artifact does not). Both load the module under test with
-stubbed `pyray` / `Params` / `REBOOT_FLAG`, so they run without a GPU. Device-level check
-pending: reboot 1.10, confirm no prompt during startup and after an ignition-on param wipe.
+stubbed pyray / Params / REBOOT_FLAG, so they run without a GPU. Device-level check on 1.10: a healthy boot leaves no flag at all, and clearing UsbGpuLoading / UsbGpuActive (what an ignition-on does) draws nothing, where before the same state produced REBOOT.

@@ -9,8 +9,10 @@
   startup. The flag is now written only for a delivery that landed, a delivery still in
   flight draws nothing, and the flag is cleared once UsbGpuActive is true - so the prompt
   cannot reappear later in the same boot. No upstream file and no rebuild were touched;
-  9 focused tests (7 badge, 2 delivery) with stubbed pyray/Params/REBOOT_FLAG; device reboot
-  validation on 1.10 pending. See docs/egpu_reboot_badge_20261016.md.
+  9 focused tests (7 badge, 2 delivery) with stubbed pyray/Params/REBOOT_FLAG, plus the 15
+  other delivery tests, pass on 1.10. Device validation on 1.10: a healthy boot leaves no
+  /tmp flag, and clearing UsbGpuLoading/UsbGpuActive (what an ignition-on does) draws
+  nothing. See docs/egpu_reboot_badge_20261016.md.
 
 - On 2026-10-10, RAV4 route 0d segments 5-9 on e7987ed confirmed an
   onroadEvents cadence regression: healthy event-change bursts exceed the 1 Hz
