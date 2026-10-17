@@ -57,7 +57,8 @@ AM_POWER_LIMIT = ""  # the chunked model runs uncapped; see AM_POWER_LIMIT_PRECO
 # repo's own tinygrad, which retries those transfers, and has run uncapped for hours.
 AM_POWER_LIMIT_PRECOMPILED = "120"
 
-# Runtime control for that cap, read at interpreter start by the precompiled worker:
+# Runtime control for that cap, read at interpreter start by the precompiled worker from
+# /data/egpu_power_limit:
 #   file missing -> AM_POWER_LIMIT_PRECOMPILED (the 120W wall above)
 #   empty file   -> no cap at all (the GPU runs at its own SMU PPT limit)
 #   a number     -> that many watts ("150", "150W", "150.0" all mean 150W)
