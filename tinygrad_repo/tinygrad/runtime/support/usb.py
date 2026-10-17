@@ -144,7 +144,14 @@ class USB3:
     if length > len(self._bulk_in_mv): self._bulk_in_buf, self._bulk_in_mv = alloc_cbuffer(length)
     with usbgpu_bus_lock():
       checked(libusb.libusb_bulk_transfer, f"bulk IN 0x{ep:02X} failed")(self.handle, ep, self._bulk_in_buf, length, self._transferred, timeout)
-    return self._bulk_in_mv[:self._transferred.value]
+    # [upstream port] tinygrad 16c52c2 "usb fail fast": a transfer can return OK yet
+    # deliver fewer bytes than requested (bridge under load / link flap). Returning the
+    # truncated view hands the caller silently short data - on the model output readback
+    # (pcie_mem_read -> _bulk_in(0x81, nbytes)) that is a truncated output tensor, not a
+    # hard failure, so it would slip past the "fall back to the internal GPU" path above.
+    # A short read is a partial transfer: per the _bulk_out policy, never retry, just fail.
+    if self._transferred.value != length: raise RuntimeError(f"bulk IN short read on 0x{ep:02X}: {self._transferred.value}/{length} bytes")
+    return self._bulk_in_mv[:length]
 
   def send_batch(self, cdbs:list[bytes], idata:list[int]|None=None, odata:list[bytes|None]|None=None) -> list[bytes|None]:
     with usbgpu_bus_lock():
