@@ -89,9 +89,9 @@ AlertCallbackType = Callable[[car.CarParams, car.CarState, messaging.SubMaster, 
 
 
 def wrong_car_mode_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
-  text = "Enable Adaptive Cruise to Engage"
+  text = "启用自适应巡航以激活"
   if CP.brand == "honda":
-    text = "Enable Main Switch to Engage"
+    text = "启用巡航主开关以激活"
   return NoEntryAlert(text)
 
 
@@ -185,7 +185,7 @@ EmptyAlert = Alert("" , "", AlertStatus.normal, AlertSize.none, Priority.LOWEST,
 
 class NoEntryAlert(Alert):
   def __init__(self, alert_text_2: str,
-               alert_text_1: str = "openpilot Unavailable",
+               alert_text_1: str = "openpilot 暂不可用",
                visual_alert: car.CarControl.HUDControl.VisualAlert=VisualAlert.none,
                priority: Priority = Priority.LOW):
     if HARDWARE.get_device_type() == 'mici':
@@ -197,7 +197,7 @@ class NoEntryAlert(Alert):
 
 class SoftDisableAlert(Alert):
   def __init__(self, alert_text_2: str):
-    super().__init__("TAKE CONTROL IMMEDIATELY", alert_text_2,
+    super().__init__("请立即接管控制", alert_text_2,
                      AlertStatus.userPrompt, AlertSize.full,
                      Priority.MID, VisualAlert.steerRequired,
                      AudibleAlert.warningSoft, 2.),
@@ -207,12 +207,12 @@ class SoftDisableAlert(Alert):
 class UserSoftDisableAlert(SoftDisableAlert):
   def __init__(self, alert_text_2: str):
     super().__init__(alert_text_2),
-    self.alert_text_1 = "openpilot will disengage"
+    self.alert_text_1 = "辅助驾驶即将退出"
 
 
 class ImmediateDisableAlert(Alert):
   def __init__(self, alert_text_2: str):
-    super().__init__("TAKE CONTROL IMMEDIATELY", alert_text_2,
+    super().__init__("请立即接管控制", alert_text_2,
                      AlertStatus.critical, AlertSize.full,
                      Priority.HIGHEST, VisualAlert.steerRequired,
                      AudibleAlert.none, 0),
@@ -234,7 +234,7 @@ class NormalPermanentAlert(Alert):
 
 
 class StartupAlert(Alert):
-  def __init__(self, alert_text_1: str, alert_text_2: str = "Always keep hands on wheel and eyes on road", alert_status=AlertStatus.normal):
+  def __init__(self, alert_text_1: str, alert_text_2: str = "请始终手握方向盘，目视前方", alert_status=AlertStatus.normal):
     alert_size = AlertSize.mid
     if HARDWARE.get_device_type() == 'mici':
       if alert_text_2 == "Always keep hands on wheel and eyes on road":
