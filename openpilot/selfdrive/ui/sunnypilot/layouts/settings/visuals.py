@@ -72,11 +72,11 @@ class VisualsLayout(Widget):
            "It is the driver's responsibility to observe their environment and make decisions accordingly."),
         None,
       ),
-      "TrueVEgoUI": (
-        lambda: tr("Speedometer: Always Display True Speed"),
-        tr("For applicable vehicles, always display the true vehicle current speed from wheel speed sensors."),
-        None,
-      ),
+      # "TrueVEgoUI": (
+      #   lambda: tr("Speedometer: Always Display True Speed"),
+      #   tr("For applicable vehicles, always display the true vehicle current speed from wheel speed sensors."),
+      #   None,
+      # ),
       "HideVEgoUI": (
         lambda: tr("Speedometer: Hide from Onroad Screen"),
         tr("When enabled, the speedometer on the onroad screen is not displayed."),

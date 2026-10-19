@@ -83,7 +83,7 @@ class CruiseLayout(Widget):
     )
 
     items = [
-      self.icbm_toggle,
+    #   self.icbm_toggle,
       self.scc_v_toggle,
       self.scc_m_toggle,
       self.custom_acc_toggle,
