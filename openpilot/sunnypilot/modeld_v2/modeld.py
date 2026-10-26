@@ -254,6 +254,39 @@ class ModelState(ModelStateBase):
     return log.ModelDataV2.Action(desiredCurvature=float(desired_curvature), desiredAcceleration=float(desired_accel), shouldStop=bool(stop))
 
 
+def chestnut_usb_node_ready(timeout: float = 90.0, poll: float = 0.5) -> bool:
+  """[port-egpu-usb] 冷启动竞态守卫。
+
+  devtmpfs 以 0600 root:root 创建 /dev/bus/usb/<bus>/<dev>，udev 要等 builtin
+  usb_id 读完描述符后才放宽成 0664。eGPU 与车机同时上电时 ASM2464 描述符响应慢，
+  这个窗口可达数十秒；modeld 以 comma 身份 libusb_open -> EACCES ->
+  "libusb_open: Access denied" -> load_big 只试一次即放弃 -> 静默回退小模型。
+  这里等到节点真能打开（或超时）再加载。判据用 os.open(O_RDWR)：
+  与 libusb_open 走的是同一个 syscall，最贴近真实条件。
+  """
+  import glob, os as _os, time as _time
+  t0 = _time.monotonic()
+  while True:
+    for sd in glob.glob('/sys/bus/usb/devices/*'):
+      try:
+        with open(sd + '/idVendor') as f:
+          if f.read().strip() != '3801':
+            continue
+        bus = int(open(sd + '/busnum').read())
+        dev = int(open(sd + '/devnum').read())
+      except Exception:
+        continue
+      try:
+        _os.close(_os.open(f'/dev/bus/usb/{bus:03d}/{dev:03d}', _os.O_RDWR))
+        return True
+      except OSError:
+        pass
+    if _time.monotonic() - t0 > timeout:
+      cloudlog.warning(f"chestnut usb node not accessible after {timeout:.0f}s")
+      return False
+    _time.sleep(poll)
+
+
 def main(demo=False):
   cloudlog.warning("modeld init")
 
@@ -303,7 +336,8 @@ def main(demo=False):
     def load_big():
       nonlocal big_model
       try:
-        wait_for_chestnut()
+        wait_for_chestnut()  # [port-egpu-usb] 已放宽为 VID/PID 识别 + 60s
+        chestnut_usb_node_ready()  # [port-egpu-usb] 等 /dev 节点真能 O_RDWR
         m = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=True)
         m.warmup()
         big_model = m
