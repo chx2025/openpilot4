@@ -36,7 +36,39 @@ def read_int(path: Path, base: int = 10) -> int:
     return 0
 
 
+def _extcon_usb_attached() -> bool | None:
+  """qcom extcon 里当前的 USB 连接位。
+
+  多个 extcon 都带 USB 属性（usb-pdphy / SMB2 / eud），只要有一条是 1 就算连上；
+  全是 0 表示当前没有插任何 USB 设备。读不到 extcon 时返回 None 让调用方兜底。
+  """
+  found = False
+  try:
+    states = list(Path('/sys/class/extcon').glob('*/state'))
+  except OSError:
+    return None
+  for state in states:
+    try:
+      txt = state.read_text()
+    except OSError:
+      continue
+    for line in txt.splitlines():
+      key, _, val = line.partition('=')
+      if key.strip() == 'USB':
+        found = True
+        if val.strip() == '1':
+          return True
+  return False if found else None
+
+
 def cable_connected() -> bool:
+  # [port-egpu-usb] TYPEC_CC_ORIENTATION 是粘滞值：线拔掉后内核不清零
+  # （实测拔掉底座后仍是 2）。只看它会让 CHESTNUT 分支永远成立 -> 每次 onroad 都要
+  # 白等 wait_for_chestnut() 超时，然后置 ChestnutRetry=1，下次也不再自动重试。
+  # 优先用 extcon 的 USB 连接位判断「现在到底插没插」。
+  attached = _extcon_usb_attached()
+  if attached is not None:
+    return attached
   return read_int(TYPEC_CC_ORIENTATION_PATH) != 0
 
 
