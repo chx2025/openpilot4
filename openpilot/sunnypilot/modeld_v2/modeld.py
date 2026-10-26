@@ -10,7 +10,7 @@ from collections.abc import Callable
 import gc
 import os
 os.environ['GMMU'] = '0'
-os.environ.setdefault('AM_POWER_LIMIT', '120')  # [local patch] chestnut eGPU PPT 上限，降低峰值电流
+os.environ.setdefault('AM_POWER_LIMIT', '100')  # [local patch] chestnut eGPU PPT 上限，降低峰值电流
 from tinygrad.device import Device
 import numpy as np
 import threading
