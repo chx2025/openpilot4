@@ -6,8 +6,7 @@ import gc
 from functools import cached_property
 import os
 os.environ['GMMU'] = '0' # for chestnut fast loading, noop for qcom
-os.environ.setdefault('AM_POWER_LIMIT', '100')
-os.environ.setdefault('AM_PERF_LEVEL', 'high')
+os.environ.setdefault('AM_POWER_LIMIT', '120')  # [local patch] chestnut eGPU PPT 上限，降低峰值电流
 from tinygrad.device import Buffer, Device
 from tinygrad.dtype import DType, dtypes
 from tinygrad.engine.realize import lower_and_compile
@@ -50,7 +49,7 @@ SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
 LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
 MIN_LAT_CONTROL_SPEED = 0.3
-BIG_MODEL_TIMEOUT = 60
+BIG_MODEL_TIMEOUT = 600  # [local patch] 60s 载入不完 ~800MB 的 chestnut 大模型
 
 
 def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
