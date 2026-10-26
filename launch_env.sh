@@ -45,3 +45,11 @@ export TINYGRAD_CACHE_DIR=/data/tg_cache/tinygrad
 if [ -x "${DIR:-/data/openpilot}/system/egpu_usb_perm.sh" ]; then
   setsid "${DIR:-/data/openpilot}/system/egpu_usb_perm.sh" >/dev/null 2>&1 &
 fi
+
+# ---- [port-egpu-trace] eGPU USB 链路时序记录 ----
+# 只在 /data/egpu_trace.enable 存在时拉起，默认记 180s 到 /data/egpu_trace.log，
+# 用于把「底座上电 / 继电器动作 / USB 枚举 / 掉线」对到同一条时间轴。
+# 排查完 rm /data/egpu_trace.enable 即可，不加钩子也不会再跑。
+if [ -f /data/egpu_trace.enable ] && [ -x "${DIR:-/data/openpilot}/system/egpu_usb_trace.sh" ]; then
+  setsid "${DIR:-/data/openpilot}/system/egpu_usb_trace.sh" >/dev/null 2>&1 &
+fi

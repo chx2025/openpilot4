@@ -68,8 +68,16 @@ class Chestnut:
     self.flashed = ret.returncode == 0
 
   def update(self, offroad: bool, usb_state: list[dict]) -> None:
-    self.mismatch = any(is_chestnut_usb_id(d["vendorId"], d["productId"], include_bootloader=True) and
-                        d["product"] != CHESTNUT_USB_PRODUCT for d in usb_state)
+    # [port-egpu-usb] 底座是第三方 ASM2464：product 串永远不会等于 comma 的
+    # 官方版本号（实测 custom ed4e39b7-CLEAN）。原来这里会在 offroad 时把官方固件
+    # 写进第三方底座（2026-10-26 14:26 实际发生：returncode=0、镜像校验通过），
+    # 刷完底座就不再枚举。而且判据带 include_bootloader=True，ROM 模式
+    # (174c:2464) 也会被判成 mismatch 再刷一次，恢复时会被反复打断。
+    # 官方固件只适用于官方底座：这里一律不自动刷，需要时手动跑
+    #   sudo python3 openpilot/system/hardware/chestnut/flash.py <target-hash>
+    self.mismatch = False
+    self.flashed = False
+    return
     if not self.mismatch:
       self.flashed = False
       return
