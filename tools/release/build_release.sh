@@ -71,7 +71,7 @@ if ! printf '%s\n' "$ssh_auth_output" | grep -Fq "You've successfully authentica
   exit 1
 fi
 
-BUILD_BRANCH="XL-sp-tici"
+BUILD_BRANCH="XL-devtest-tici"
 
 
 # set git identity
