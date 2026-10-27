@@ -20,15 +20,19 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 from openpilot.sunnypilot.selfdrive.controls.lib.turn_decel import TurnDecelController
 
-J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]
+J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]  # jerk 表（m/s^3）：加速度每步变化率，管「平不平滑」
 J_CRUISE_BP = [0., 10.0, 25., 40.]
-A_CRUISE_MIN = -0.5
-A_CRUISE_T = 2 # target acceleration time horizon
+A_CRUISE_MIN = -1.0  # 巡航允许的减速度下限（负值，越负减速越果断）
+A_CRUISE_T = 2 # target acceleration time horizon（速度差 ÷ 2s = 期望加速度，追速闭环）
+# 加速度上限表（m/s 锚点 -> m/s^2 上限）：管「最多加多猛」，低速有力、高速稳
+A_CRUISE_MAX_BP = [0., 2.77, 5.55, 8.33, 11.11, 13.89, 16.6, 19.4, 22.22, 25, 27.78, 33.33]
+A_CRUISE_MAX_VALS = [1.05, 0.9, 0.80, 0.65, 0.50, 0.40, 0.35, 0.35, 0.35, 0.33, 0.31, 0.29]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
 
 def get_cruise_accel(v_cruise, v_ego, a_cruise_prev, dt):
-  target_accel = np.clip((v_cruise - v_ego) / A_CRUISE_T, A_CRUISE_MIN, ACCEL_MAX)
+  accel_max = np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
+  target_accel = np.clip((v_cruise - v_ego) / A_CRUISE_T, A_CRUISE_MIN, accel_max)
   j_cruise = np.interp(v_ego, J_CRUISE_BP, J_CRUISE_VALS)
   target_accel = float(np.clip(target_accel, a_cruise_prev - j_cruise * dt, a_cruise_prev + j_cruise * dt))
 
