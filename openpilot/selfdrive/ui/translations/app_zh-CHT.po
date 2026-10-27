@@ -883,3 +883,4 @@ msgstr "✓ 已訂閱"
 msgid "🔥 Firehose Mode 🔥"
 msgstr "🔥 Firehose 模式 🔥"
 
+# dp long-assist toggles glyphs: ²→且之也仍但停復必恢打按掛整方暫油減滑漸煞燈盤秒若被角讓起超都鍵門鬆／；
