@@ -3,19 +3,20 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
+
+SP8516 定制：SUNNYLINK 状态卡替换为「模型状态卡」（小模型 / 加载进度 / 功耗温度），
+见 selfdrive/ui/egpu_status.py。原 sunnylink 逻辑移除。
 """
 import math
+import time
 
 import pyray as rl
-import time
 from dataclasses import dataclass
 from openpilot.selfdrive.ui.ui_state import ui_state, ChestnutState
-from openpilot.sunnypilot.sunnylink.api import UNREGISTERED_SUNNYLINK_DONGLE_ID
+from openpilot.selfdrive.ui.egpu_status import build_model_sidebar_status
 from openpilot.system.ui.lib.application import gui_app
-from openpilot.system.ui.lib.multilang import tr_noop
 
 
-PING_TIMEOUT_NS = 80_000_000_000  # 80 seconds in nanoseconds
 METRIC_HEIGHT = 126
 METRIC_MARGIN = 30
 METRIC_START_Y = 300
@@ -58,35 +59,43 @@ class MetricData:
 
 class SidebarSP:
   def __init__(self):
-    self._sunnylink_status = MetricData(tr_noop("SUNNYLINK"), tr_noop("OFFLINE"), Colors.WARNING)
+    self._model_status = MetricData("模型", "小模型", Colors.DISABLED)
+    self._loading_since: float | None = None
     self._chestnut_green_img = gui_app.texture("icons_mici/chestnut_green.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
     self._chestnut_default_img = gui_app.texture("icons_mici/chestnut.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
     self._chestnut_orange_img = gui_app.texture("icons_mici/chestnut_orange.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
     self._egpu_offline_img = gui_app.texture("icons_mici/egpu_offline.png", CHESTNUT_ICON_WIDTH, CHESTNUT_ICON_HEIGHT)
 
-  def _update_sunnylink_status(self):
-    if not ui_state.params.get_bool("SunnylinkEnabled"):
-      self._sunnylink_status.update(tr_noop("SUNNYLINK"), tr_noop("DISABLED"), Colors.DISABLED)
-      return
+  def _update_model_status(self):
+    state = ui_state.chestnut_state
+    # chestnutState 由 hardwared 的 chestnut_state_thread 发布（GPU SMU 遥测）；
+    # recv_frame == 0 表示还没收到过，字段是 capnp 默认 0，不要拿来显示。
+    have_telemetry = ui_state.sm.recv_frame.get("chestnutState", 0) > 0
+    telemetry = ui_state.sm["chestnutState"]
+    temp_c = float(telemetry.tempC) if have_telemetry else 0.0
+    power_w = float(telemetry.powerDrawW) if have_telemetry else 0.0
+    gpu_usage = int(telemetry.gpuUsagePercent) if have_telemetry else 0
 
-    last_ping = ui_state.params.get("LastSunnylinkPingTime") or 0
-    dongle_id = ui_state.params.get("SunnylinkDongleId")
-
-    is_online = last_ping and (time.monotonic_ns() - last_ping) < PING_TIMEOUT_NS
-    is_temp_fault = ui_state.params.get_bool("SunnylinkTempFault")
-    is_registering = not is_temp_fault and dongle_id in (None, "", UNREGISTERED_SUNNYLINK_DONGLE_ID)
-
-    # Determine status/color pair based on priority
-    if last_ping:
-      status, color = (tr_noop("ONLINE"), Colors.GOOD) if is_online else (tr_noop("ERROR"), Colors.DANGER)
-    elif is_temp_fault:
-      status, color = (tr_noop("FAULT"), Colors.WARNING)
-    elif is_registering:
-      status, color = (tr_noop("REGIST..."), Colors.PROGRESS)
+    # 加载进度：进入 LOADING 记录起点，40s 时长估算（99% 封顶）；离开清零
+    if state == ChestnutState.LOADING:
+      if self._loading_since is None:
+        self._loading_since = time.monotonic()
+      elapsed = time.monotonic() - self._loading_since
     else:
-      status, color = (tr_noop("OFFLINE"), Colors.DANGER)
+      self._loading_since = None
+      elapsed = None
 
-    self._sunnylink_status.update(tr_noop("SUNNYLINK"), status, color)
+    label, value, severity, _detail = build_model_sidebar_status(
+      state_name=state.value, temp_c=temp_c, power_w=power_w,
+      gpu_usage=gpu_usage, loading_elapsed_s=elapsed)
+    color = {
+      "good": Colors.GOOD,
+      "warning": Colors.WARNING,
+      "danger": Colors.DANGER,
+      "progress": Colors.PROGRESS,
+      "disabled": Colors.DISABLED,
+    }.get(severity, Colors.DISABLED)
+    self._model_status.update(label, value, color)
 
   def _get_home_icon(self, default_img: rl.Texture) -> tuple[rl.Texture, rl.Vector2, float]:
     state = ui_state.chestnut_state
@@ -108,8 +117,8 @@ class SidebarSP:
     y = HOME_BTN.y + (HOME_BTN.height - icon.height) / 2
     return icon, rl.Vector2(x, y), opacity
 
-  def _draw_metrics_w_sunnylink(self, rect: rl.Rectangle, _temp, _panda, _connect):
-    metrics = [_temp, _panda, _connect, self._sunnylink_status]
+  def _draw_metrics_w_model(self, rect: rl.Rectangle, _temp, _panda, _connect):
+    metrics = [_temp, _panda, _connect, self._model_status]
     start_y = int(rect.y) + METRIC_START_Y
     available_height = max(0, int(HOME_BTN.y) - METRIC_MARGIN - METRIC_HEIGHT - start_y)
     spacing = available_height / max(1, len(metrics) - 1)

@@ -115,7 +115,7 @@ class Sidebar(Widget, SidebarSP):
     self._update_temperature_status(device_state)
     self._update_connection_status(device_state)
     self._update_panda_status()
-    SidebarSP._update_sunnylink_status(self)
+    SidebarSP._update_model_status(self)
 
   def _update_network_status(self, device_state):
     self._net_type = NETWORK_TYPES.get(device_state.networkType.raw, tr_noop("Unknown"))
@@ -210,7 +210,7 @@ class Sidebar(Widget, SidebarSP):
 
   def _draw_metrics(self, rect: rl.Rectangle):
     if gui_app.sunnypilot_ui():
-      metrics, start_y, spacing = SidebarSP._draw_metrics_w_sunnylink(self, rect, self._temp_status, self._panda_status, self._connect_status)
+      metrics, start_y, spacing = SidebarSP._draw_metrics_w_model(self, rect, self._temp_status, self._panda_status, self._connect_status)
       for idx, metric in enumerate(metrics):
         self._draw_metric(rect, metric, start_y + idx * spacing)
 
