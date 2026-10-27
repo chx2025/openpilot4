@@ -27,6 +27,9 @@ export STAGING_ROOT="/data/safe_staging"
 # 不要设 AM_PERF_LEVEL=high，那会钉最高频硬撞功率墙。
 export AM_POWER_LIMIT=100
 
+# C3XL IFE 硬件 road-camera resize：1928x1208 -> 1344x760，降低 USB 带宽/GPU 负载减少掉帧
+export C3XL_IFE_ROAD_SIZE="${C3XL_IFE_ROAD_SIZE-1344x760}"
+
 # ==== [port-egpu-usb] 移植自 spfix1016 0010-egpu-c3xl-ife ====
 
 # eGPU(chestnut) 插着时 SConscript 会尝试编译 big_driving_supercombo.onnx，

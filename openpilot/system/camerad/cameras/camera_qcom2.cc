@@ -43,6 +43,7 @@ public:
   float target_grey_fraction = 0.125;
 
   float fl_pix = 0;
+  float fl_pix_y = 0;
   std::unique_ptr<PubMaster> pm;
 
   CameraState(SpectraMaster *master, const CameraConfig &config) : camera(master, config) {};
@@ -64,6 +65,11 @@ void CameraState::init(VisionIpcServer *v) {
   if (!camera.enabled) return;
 
   fl_pix = camera.cc.focal_len / camera.sensor->pixel_size_mm / camera.sensor->out_scale;
+  fl_pix_y = fl_pix;
+  if (camera.ife_road_resize) {
+    fl_pix *= float(camera.buf.out_img_width) / camera.sensor->frame_width;
+    fl_pix_y *= float(camera.buf.out_img_height) / camera.sensor->frame_height;
+  }
   set_exposure_rect();
 
   dc_gain_weight = camera.sensor->dc_gain_min_weight;
@@ -98,9 +104,9 @@ void CameraState::set_exposure_rect() {
 
   ae_xywh = (Rect){
     std::max(0, (int)camera.buf.out_img_width / 2 - (int)(fl_pix / fl_ref * xywh_ref.w / 2)),
-    std::max(0, (int)camera.buf.out_img_height / 2 - (int)(fl_pix / fl_ref * (h_ref / 2 - xywh_ref.y))),
+    std::max(0, (int)camera.buf.out_img_height / 2 - (int)(fl_pix_y / fl_ref * (h_ref / 2 - xywh_ref.y))),
     std::min((int)(fl_pix / fl_ref * xywh_ref.w), (int)camera.buf.out_img_width / 2 + (int)(fl_pix / fl_ref * xywh_ref.w / 2)),
-    std::min((int)(fl_pix / fl_ref * xywh_ref.h), (int)camera.buf.out_img_height / 2 + (int)(fl_pix / fl_ref * (h_ref / 2 - xywh_ref.y)))
+    std::min((int)(fl_pix_y / fl_ref * xywh_ref.h), (int)camera.buf.out_img_height / 2 + (int)(fl_pix_y / fl_ref * (h_ref / 2 - xywh_ref.y)))
   };
 }
 

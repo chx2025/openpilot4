@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cdm.h"
+#include "ife_scale.h"
 
 #include "system/camerad/cameras/hw.h"
 #include "system/camerad/sensors/sensor.h"
@@ -105,7 +106,7 @@ int build_update(uint8_t *dst, const CameraConfig cam, const SensorInfo *s, std:
 }
 
 
-int build_initial_config(uint8_t *dst, const CameraConfig cam, const SensorInfo *s, std::vector<uint32_t> &patches, uint32_t out_width, uint32_t out_height) {
+int build_initial_config(uint8_t *dst, const CameraConfig cam, const SensorInfo *s, std::vector<uint32_t> &patches, uint32_t out_width, uint32_t out_height, bool custom_scale = false) {
   uint8_t *start = dst;
 
   // start with the every frame config
@@ -182,6 +183,13 @@ int build_initial_config(uint8_t *dst, const CameraConfig cam, const SensorInfo 
   dst += write_dmi(dst, &addr, s->gamma_lut_rgb.size()*sizeof(uint32_t), 0xc24, 30);  // R
   patches.push_back(addr - (uint64_t)start);
 
+  // Keep legacy register values byte-identical when the experiment is off.
+  if (custom_scale) {
+    const auto y = ife_scale_registers(s->frame_width, s->frame_height, out_width, out_height);
+    const auto uv = ife_scale_registers(s->frame_width, s->frame_height, out_width/2, out_height/2);
+    dst += write_cont(dst, 0xa3c, std::vector<uint32_t>(y.begin(), y.end()));
+    dst += write_cont(dst, 0xa68, std::vector<uint32_t>(uv.begin(), uv.end()));
+  } else {
   // output size/scaling
   dst += write_cont(dst, 0xa3c, {
     0x00000003,
@@ -209,6 +217,8 @@ int build_initial_config(uint8_t *dst, const CameraConfig cam, const SensorInfo 
     0x00000000,
     s->frame_height - 1,
   });
+
+  }
 
   // cropping
   dst += write_cont(dst, 0xe10, {

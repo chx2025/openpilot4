@@ -211,6 +211,7 @@ public:
   int invalid_request_count = 0;
   bool skip_expected = true;
 
+  bool ife_road_resize = false;
   CameraBuf buf;
   SpectraMaster *m;
 
