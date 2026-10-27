@@ -82,6 +82,21 @@ class CruiseLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.SLA)
     )
 
+    self.gas_long_cancel_toggle = toggle_item_sp(
+      title=tr("踩油門掛起縱向"),
+      description=tr("踩下油門即掛起整個縱向控制（滑行，不主動加速也不主動煞車），"
+                     "鬆開油門 0.2 秒後自動恢復。若縱向是被煞車或按鍵取消的，"
+                     "之後踩／鬆油門都不會恢復，必須重新 engage。"),
+      param="GasLongCancel")
+
+    self.turn_decel_toggle = toggle_item_sp(
+      title=tr("打燈減速 / 大角度不加速"),
+      description=tr("打轉向燈 2 秒後減速到 15 km/h（0.5→1.2 m/s² 漸進）；"
+                     "方向盤超過 15° 暫停減速但仍不主動加速；"
+                     "方向盤超過 60° 且車速超過 15 km/h 時不主動加速（與轉向燈無關）。"
+                     "踩油門時本功能完全讓位。"),
+      param="TurnDecel")
+
     items = [
     #   self.icbm_toggle,
       self.scc_v_toggle,
@@ -89,6 +104,8 @@ class CruiseLayout(Widget):
       self.custom_acc_toggle,
       self.custom_acc_short_increment,
       self.custom_acc_long_increment,
+      self.gas_long_cancel_toggle,
+      self.turn_decel_toggle,
       self.sla_settings_button,
     ]
     return items

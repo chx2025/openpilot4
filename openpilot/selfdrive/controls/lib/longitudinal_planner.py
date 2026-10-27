@@ -16,6 +16,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
+from openpilot.sunnypilot.selfdrive.controls.lib.turn_decel import TurnDecelController
 
 J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]
 J_CRUISE_BP = [0., 10.0, 25., 40.]
@@ -45,6 +46,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_cruise = init_a
     self.output_a_target = init_a
     self.output_should_stop = False
+    self.turn_decel = TurnDecelController()  # 打灯减速 + 大角度不主动加速
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -71,6 +73,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.v_desired_filter.x = v_ego
       self.output_a_target = np.clip(sm['carState'].aEgo, ACCEL_MIN, ACCEL_MAX)
       self.a_cruise = self.output_a_target
+      self.turn_decel.reset()
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -118,6 +121,23 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
+
+    # 打灯减速 + 大角度限加速（sunnypilot，post-candidate-min、final clip 之前）
+    blinker_on = bool(sm['carState'].leftBlinker or sm['carState'].rightBlinker)
+    turn_decel_res = self.turn_decel.update(
+      blinker_on=blinker_on,
+      v_ego=v_ego,
+      steering_angle_deg=sm['carState'].steeringAngleDeg,
+      dt=self.dt,
+      gas_pressed=bool(sm['carState'].gasPressed),
+      left_blinker=bool(sm['carState'].leftBlinker),
+      right_blinker=bool(sm['carState'].rightBlinker),
+    )
+    if turn_decel_res.a_target_override is not None:
+      output_a_target = min(output_a_target, turn_decel_res.a_target_override)
+    if turn_decel_res.block_accel and output_a_target > 0.0:
+      output_a_target = 0.0
+
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.output_a_target + a_prev) / 2.0
