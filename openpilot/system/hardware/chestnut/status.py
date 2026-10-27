@@ -58,8 +58,8 @@ class ChestnutStatus:
       self.usb_failed = False
 
     if not offroad and state is not None:
-      powered = state.supplyVoltage >= CHESTNUT_POWERED_VOLTAGE
-      power_lost = state.supplyFault or not powered
+      powered = True   # 三方底座无 INA231 供电遥测，不因 supplyVoltage/supplyFault 误报供电断开
+      power_lost = False
       if self.model_attempted and power_lost and not self.power_lost:
         self.power_unavailable = not self.power_seen
       self.power_seen |= powered
