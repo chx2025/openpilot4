@@ -3,6 +3,8 @@ import numpy as np
 
 import openpilot.cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
+ACCEL_MAX = 1.3  # 最大加速度上限（override opendbc 的 2.0，降低加速力度）
+
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL

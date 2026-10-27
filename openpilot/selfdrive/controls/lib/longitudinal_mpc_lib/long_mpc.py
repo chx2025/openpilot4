@@ -4,6 +4,8 @@ import time
 import numpy as np
 from openpilot.cereal import log
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
+ACCEL_MAX = 1.3  # 最大加速度上限（override opendbc 的 2.0，降低加速力度）
+
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.swaglog import cloudlog
 # WARNING: imports outside of constants will not trigger a rebuild
