@@ -62,10 +62,11 @@ class Chestnut:
     return self.mismatch and self.attempts >= self.MAX_ATTEMPTS and self.thread is not None and not self.thread.is_alive() and not self.flashed
 
   def flash(self) -> None:
-    ret = subprocess.run(["sudo", sys.executable, os.path.join(BASEDIR, "openpilot/system/hardware/chestnut/flash.py"), CHESTNUT_FW_VERSION],
-                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
-    cloudlog.event("chestnut flash done", returncode=ret.returncode, output=ret.stdout[-1000:], error=ret.returncode != 0)
-    self.flashed = ret.returncode == 0
+    # [flash-lock] 双保险：第三方底座绝不自动刷官方固件。即使 update() 短路被
+    # 意外回退，这里也无条件拒绝，杜绝任何自动刷写路径。
+    cloudlog.warning("chestnut flash SKIPPED: third-party dock protection (flash disabled)")
+    self.flashed = False
+    return
 
   def update(self, offroad: bool, usb_state: list[dict]) -> None:
     # [port-egpu-usb] 底座是第三方 ASM2464：product 串永远不会等于 comma 的
